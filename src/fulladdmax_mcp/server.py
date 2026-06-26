@@ -506,6 +506,23 @@ async def swarm_run(
             agents = swarm.parse_agents_json(agents_json)
         except FullADDMAXError as e:
             return f"ERROR: {type(e).__name__}: {e}"
+
+    # Resolve the effective agent set so the log matches what
+    # swarm.run() will actually use (parse_agents_json above builds a
+    # fresh dict; otherwise we fall back to the module-level registry).
+    effective_agents = (
+        agents if agents is not None else swarm.registry.snapshot()
+    )
+    log.info(
+        "swarm_run: initial_agent=%r task=%r max_handoffs=%d "
+        "agents_json=%s effective_agents=%s",
+        initial_agent,
+        task,
+        max_handoffs,
+        repr(agents_json) if agents_json else "<empty -> use registry>",
+        sorted(effective_agents),
+    )
+
     try:
         return await swarm.run(
             initial_agent,
