@@ -26,7 +26,7 @@ from typing import Literal
 from mcp.server.fastmcp import Context, FastMCP
 
 from . import __version__
-from . import mapreduce, orchestrator, parallel, swarm
+from . import mapreduce, obsidian, orchestrator, parallel, swarm
 from .errors import FullADDMAXError
 from .llm import LLMConfig, get_config, set_config
 from .tools import (
@@ -169,6 +169,108 @@ def unregister_agent_tool(name: str) -> str:
     if tool_registry.unregister(name):
         return f"Unregistered: {name}"
     return f"skipped: {name!r} is not registered"
+
+
+# ---------------------------------------------------------------------------
+# Obsidian vault integration
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def obsidian_list_notes(vault_path: str, folder: str = "", limit: int = 500) -> str:
+    """List all ``.md`` notes in an Obsidian vault (or a subfolder).
+
+    Each tool takes ``vault_path`` as a parameter so one server can
+    serve many vaults in the same session. Paths are validated against
+    the vault root to prevent directory traversal.
+    """
+    try:
+        return obsidian.list_notes_tool(vault_path, folder=folder, limit=limit)
+    except FullADDMAXError as e:
+        return f"ERROR: {type(e).__name__}: {e}"
+
+
+@mcp.tool()
+def obsidian_read_note(vault_path: str, path: str) -> str:
+    """Read a single note from an Obsidian vault.
+
+    Returns a Markdown report with the frontmatter block and the body.
+    """
+    try:
+        return obsidian.read_note_tool(vault_path, path)
+    except FullADDMAXError as e:
+        return f"ERROR: {type(e).__name__}: {e}"
+
+
+@mcp.tool()
+def obsidian_search_notes(
+    vault_path: str,
+    keyword: str,
+    folder: str = "",
+    case_sensitive: bool = False,
+    limit: int = 50,
+) -> str:
+    """Search for ``keyword`` across note bodies and frontmatter.
+
+    Returns a Markdown list of ``path — snippet`` lines. Search is
+    case-insensitive by default.
+    """
+    try:
+        return obsidian.search_notes_tool(
+            vault_path,
+            keyword,
+            folder=folder,
+            case_sensitive=case_sensitive,
+            limit=limit,
+        )
+    except FullADDMAXError as e:
+        return f"ERROR: {type(e).__name__}: {e}"
+
+
+@mcp.tool()
+def obsidian_write_note(
+    vault_path: str,
+    path: str,
+    body: str,
+    frontmatter_json: str = "",
+    overwrite: bool = False,
+) -> str:
+    """Create or overwrite a note in an Obsidian vault.
+
+    ``frontmatter_json`` is a JSON object string (e.g.
+    ``'{"tags": ["work"], "status": "draft"}'``). Leave empty to skip
+    the frontmatter block. Fails if the note exists and ``overwrite``
+    is False.
+    """
+    try:
+        return obsidian.write_note_tool(
+            vault_path, path, body, frontmatter_json, overwrite=overwrite
+        )
+    except FullADDMAXError as e:
+        return f"ERROR: {type(e).__name__}: {e}"
+
+
+@mcp.tool()
+def obsidian_append_note(vault_path: str, path: str, content: str) -> str:
+    """Append text to a note's body, creating the note if needed.
+
+    Useful for incrementally building daily notes, research trails, or
+    agent run logs. Existing frontmatter is preserved.
+    """
+    try:
+        return obsidian.append_note_tool(vault_path, path, content)
+    except FullADDMAXError as e:
+        return f"ERROR: {type(e).__name__}: {e}"
+
+
+# Also expose the same five functions to the agent function-calling
+# registry so workers can read / search / write Obsidian notes while
+# executing a workflow. The path-traversal guard lives in :class:`Vault`.
+register_tool(obsidian.list_notes_tool, name="obsidian_list_notes")
+register_tool(obsidian.read_note_tool, name="obsidian_read_note")
+register_tool(obsidian.search_notes_tool, name="obsidian_search_notes")
+register_tool(obsidian.write_note_tool, name="obsidian_write_note")
+register_tool(obsidian.append_note_tool, name="obsidian_append_note")
 
 
 # ---------------------------------------------------------------------------
