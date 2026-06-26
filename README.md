@@ -68,32 +68,380 @@ uv pip install -e ".[dev]"
 
 ## 🧩 客户端集成 / Client Integration
 
+### ⚡ 一键配置（推荐 / Recommended）
+
+安装 server 时会自动附带 `fulladdmax-install` 命令。它能自动检测本机已装的 IDE 并写入正确配置。
+
+```bash
+pip install -e .
+
+# 1) 看本机有哪些 IDE 被识别
+fulladdmax-install --list
+
+# 2) 装到 Claude Desktop + Cursor + Codex（自动跳过未装的）
+fulladdmax-install \
+  --base-url https://api.openai.com/v1 \
+  --api-key sk-... \
+  --model gpt-4o-mini
+
+# 3) 只装到指定 IDE
+fulladdmax-install --ide claude --api-key sk-...
+
+# 4) HTTP 模式（指向已启动的 HTTP server）
+fulladdmax-install --ide cursor --url http://127.0.0.1:8000/mcp
+
+# 5) 预览不写文件
+fulladdmax-install --ide cursor --api-key sk-... --dry-run
+
+# 6) 卸载
+fulladdmax-install --ide cursor --uninstall
+```
+
+支持的 IDE：`claude`、`cursor`、`trae`、`continue`、`codex`（逗号分隔多选）。参数 `--api-key` 也可省略，靠环境变量 `FULLADDMAX_API_KEY` 提供。卸载时 `--api-key` 等可省略。
+
+输出示例：
+
+```
+  claude   installed  C:\Users\l\AppData\Roaming\Claude\claude_desktop_config.json (container_key=mcpServers)
+  cursor   installed  C:\Users\l\.cursor\mcp.json                                  (container_key=mcpServers)
+  codex    skipped    C:\Users\l\.codex\config.toml                               (no change)
+```
+
+---
+
+### 手动配置（可选） / Manual config (optional)
+
+> 所有命令都假设你把 `BASE_URL` / `API_KEY` / `MODEL` 替换成你自己的值；`fulladdmax` 是配置文件里这台 server 的显示名（可改成 `My-Agents`、`maxmcp` 等）。
+
+---
+
 ### Claude Desktop
 
-`~/Library/Application Support/Claude/claude_desktop_config.json`（macOS）或 `%APPDATA%\Claude\claude_desktop_config.json`（Windows）：
+配置文件路径：
 
-```json
+| OS | 路径 |
+|----|------|
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Linux | `~/.config/Claude/claude_desktop_config.json` |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+
+**macOS / Linux（bash / zsh）：**
+
+```bash
+CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+[ -f "$CONFIG" ] || CONFIG="$HOME/.config/Claude/claude_desktop_config.json"
+mkdir -p "$(dirname "$CONFIG")"
+
+# 用 jq 合并到已有配置，没有就新建
+TMP=$(mktemp)
+jq '.mcpServers += {
+  "fulladdmax": {
+    "command": "fulladdmax-mcp",
+    "env": {
+      "FULLADDMAX_BASE_URL": "https://api.openai.com/v1",
+      "FULLADDMAX_API_KEY":  "sk-...",
+      "FULLADDMAX_MODEL":    "gpt-4o-mini"
+    }
+  }
+}' "$CONFIG" -o "$TMP" 2>/dev/null || cat > "$TMP" <<'JSON'
 {
   "mcpServers": {
     "fulladdmax": {
       "command": "fulladdmax-mcp",
       "env": {
         "FULLADDMAX_BASE_URL": "https://api.openai.com/v1",
-        "FULLADDMAX_API_KEY": "sk-...",
-        "FULLADDMAX_MODEL": "gpt-4o-mini"
+        "FULLADDMAX_API_KEY":  "sk-...",
+        "FULLADDMAX_MODEL":    "gpt-4o-mini"
       }
     }
   }
 }
+JSON
+mv "$TMP" "$CONFIG"
+echo "✅ Claude Desktop config written to $CONFIG"
+open -a "Claude"   # macOS：自动重启 Claude
 ```
+
+**Windows（PowerShell 5+）：**
+
+```powershell
+$config = "$env:APPDATA\Claude\claude_desktop_config.json"
+New-Item -ItemType Directory -Force -Path (Split-Path $config) | Out-Null
+
+if (Test-Path $config) {
+  $cfg = Get-Content $config -Raw | ConvertFrom-Json
+} else {
+  $cfg = [pscustomobject]@{ mcpServers = [pscustomobject]@{} }
+}
+
+$cfg.mcpServers | Add-Member -NotePropertyName fulladdmax -NotePropertyValue ([pscustomobject]@{
+  command = "fulladdmax-mcp"
+  env     = [pscustomobject]@{
+    FULLADDMAX_BASE_URL = "https://api.openai.com/v1"
+    FULLADDMAX_API_KEY  = "sk-..."
+    FULLADDMAX_MODEL    = "gpt-4o-mini"
+  }
+}) -Force
+
+$cfg | ConvertTo-Json -Depth 10 | Set-Content $config -Encoding UTF8
+Write-Host "✅ Claude Desktop config written to $config"
+# Start-Process "Claude"   # 如果想自动重启
+```
+
+> **HTTP 模式**：如果 server 是远程启动的（`fulladdmax-mcp --transport streamable-http`），把上面 JSON 里的 `command`+`env` 换成 `"url": "http://host:port/mcp"`，并且该远程 server 必须先用 `configure_llm` tool 配过凭据。
+
+---
 
 ### Cursor
 
-`Settings → MCP → Add new global MCP server`，command 填 `fulladdmax-mcp`，env 同上。
+配置文件路径：
+
+| OS | 路径 |
+|----|------|
+| 全平台 | `~/.cursor/mcp.json` |
+
+**macOS / Linux：**
+
+```bash
+CONFIG="$HOME/.cursor/mcp.json"
+mkdir -p "$(dirname "$CONFIG")"
+
+cat > "$CONFIG" <<'JSON'
+{
+  "mcpServers": {
+    "fulladdmax": {
+      "command": "fulladdmax-mcp",
+      "env": {
+        "FULLADDMAX_BASE_URL": "https://api.openai.com/v1",
+        "FULLADDMAX_API_KEY":  "sk-...",
+        "FULLADDMAX_MODEL":    "gpt-4o-mini"
+      }
+    }
+  }
+}
+JSON
+echo "✅ Cursor MCP config written to $CONFIG"
+```
+
+**Windows（PowerShell）：**
+
+```powershell
+$config = "$env:USERPROFILE\.cursor\mcp.json"
+New-Item -ItemType Directory -Force -Path (Split-Path $config) | Out-Null
+@'
+{
+  "mcpServers": {
+    "fulladdmax": {
+      "command": "fulladdmax-mcp",
+      "env": {
+        "FULLADDMAX_BASE_URL": "https://api.openai.com/v1",
+        "FULLADDMAX_API_KEY":  "sk-...",
+        "FULLADDMAX_MODEL":    "gpt-4o-mini"
+      }
+    }
+  }
+}
+'@ | Set-Content $config -Encoding UTF8
+Write-Host "✅ Cursor MCP config written to $config"
+```
+
+也可以用 Cursor 内置的 CLI（v0.40+）：
+
+```bash
+# 添加 stdio 模式
+cursor --add-mcp '{
+  "name": "fulladdmax",
+  "command": "fulladdmax-mcp",
+  "env": {
+    "FULLADDMAX_BASE_URL": "https://api.openai.com/v1",
+    "FULLADDMAX_API_KEY":  "sk-...",
+    "FULLADDMAX_MODEL":    "gpt-4o-mini"
+  }
+}'
+
+# 或者添加 HTTP 模式（需要先启动 server）
+cursor --add-mcp '{"name":"fulladdmax","url":"http://127.0.0.1:8000/mcp"}'
+```
+
+---
 
 ### Trae
 
-`设置 → MCP → 添加`，同上。
+Trae 把 MCP 配置放在 `mcp.json` 里（同 Cursor 格式），路径：
+
+| OS | 路径 |
+|----|------|
+| 全平台 | `~/.trae/mcp.json`（部分版本在 `~/Library/Application Support/Trae/User/mcp.json`） |
+
+**macOS / Linux：**
+
+```bash
+CONFIG="$HOME/.trae/mcp.json"
+[ -f "$CONFIG" ] || CONFIG="$HOME/Library/Application Support/Trae/User/mcp.json"
+mkdir -p "$(dirname "$CONFIG")"
+
+cat > "$CONFIG" <<'JSON'
+{
+  "mcpServers": {
+    "fulladdmax": {
+      "command": "fulladdmax-mcp",
+      "env": {
+        "FULLADDMAX_BASE_URL": "https://api.openai.com/v1",
+        "FULLADDMAX_API_KEY":  "sk-...",
+        "FULLADDMAX_MODEL":    "gpt-4o-mini"
+      }
+    }
+  }
+}
+JSON
+echo "✅ Trae MCP config written to $CONFIG"
+```
+
+**Windows（PowerShell）：**
+
+```powershell
+$config = "$env:USERPROFILE\.trae\mcp.json"
+New-Item -ItemType Directory -Force -Path (Split-Path $config) | Out-Null
+@'
+{
+  "mcpServers": {
+    "fulladdmax": {
+      "command": "fulladdmax-mcp",
+      "env": {
+        "FULLADDMAX_BASE_URL": "https://api.openai.com/v1",
+        "FULLADDMAX_API_KEY":  "sk-...",
+        "FULLADDMAX_MODEL":    "gpt-4o-mini"
+      }
+    }
+  }
+}
+'@ | Set-Content $config -Encoding UTF8
+Write-Host "✅ Trae MCP config written to $config"
+```
+
+也可以在 Trae UI 里：设置 → MCP → 添加 → 粘贴上面的 JSON。
+
+---
+
+### Continue.dev
+
+配置文件：`~/.continue/config.json`（v0.9+ 也支持 `~/.continue/config.yaml`）。
+
+**JSON 写法：**
+
+```json
+{
+  "experimental": {
+    "modelContextProtocolServers": [
+      {
+        "name": "fulladdmax",
+        "command": "fulladdmax-mcp",
+        "env": {
+          "FULLADDMAX_BASE_URL": "https://api.openai.com/v1",
+          "FULLADDMAX_API_KEY":  "sk-...",
+          "FULLADDMAX_MODEL":    "gpt-4o-mini"
+        }
+      }
+    ]
+  }
+}
+```
+
+**YAML 写法（v0.9+）：**
+
+```yaml
+mcpServers:
+  - name: fulladdmax
+    command: fulladdmax-mcp
+    env:
+      FULLADDMAX_BASE_URL: https://api.openai.com/v1
+      FULLADDMAX_API_KEY: sk-...
+      FULLADDMAX_MODEL: gpt-4o-mini
+```
+
+**macOS / Linux 一键写入：**
+
+```bash
+CONFIG="$HOME/.continue/config.yaml"
+mkdir -p "$(dirname "$CONFIG")"
+
+cat > "$CONFIG" <<'YAML'
+mcpServers:
+  - name: fulladdmax
+    command: fulladdmax-mcp
+    env:
+      FULLADDMAX_BASE_URL: https://api.openai.com/v1
+      FULLADDMAX_API_KEY: sk-...
+      FULLADDMAX_MODEL: gpt-4o-mini
+YAML
+echo "✅ Continue config written to $CONFIG"
+```
+
+---
+
+### Codex CLI
+
+Codex 配置文件：`~/.codex/config.toml`（TOML 格式）。
+
+```toml
+[[mcp_servers]]
+name = "fulladdmax"
+command = "fulladdmax-mcp"
+env = { FULLADDMAX_BASE_URL = "https://api.openai.com/v1", FULLADDMAX_API_KEY = "sk-...", FULLADDMAX_MODEL = "gpt-4o-mini" }
+```
+
+**macOS / Linux 一键写入：**
+
+```bash
+CONFIG="$HOME/.codex/config.toml"
+mkdir -p "$(dirname "$CONFIG")"
+
+# 追加（不覆盖）
+cat >> "$CONFIG" <<'TOML'
+
+[[mcp_servers]]
+name = "fulladdmax"
+command = "fulladdmax-mcp"
+env = { FULLADDMAX_BASE_URL = "https://api.openai.com/v1", FULLADDMAX_API_KEY = "sk-...", FULLADDMAX_MODEL = "gpt-4o-mini" }
+TOML
+echo "✅ Codex config appended to $CONFIG"
+```
+
+**Windows（PowerShell）：**
+
+```powershell
+$config = "$env:USERPROFILE\.codex\config.toml"
+New-Item -ItemType Directory -Force -Path (Split-Path $config) | Out-Null
+Add-Content -Path $config -Value @'
+
+[[mcp_servers]]
+name = "fulladdmax"
+command = "fulladdmax-mcp"
+env = { FULLADDMAX_BASE_URL = "https://api.openai.com/v1", FULLADDMAX_API_KEY = "sk-...", FULLADDMAX_MODEL = "gpt-4o-mini" }
+'@
+Write-Host "✅ Codex config appended to $config"
+```
+
+---
+
+### 验证安装 / Verify the install
+
+配完之后，**重启 IDE**，然后让模型（或者你自己）调 `ping`：
+
+> "请调用 fulladdmax 的 ping tool"
+
+模型应该返回：
+
+```
+FullADDMAX-mcp v0.2.0 OK
+base_url  : https://api.openai.com/v1
+model     : gpt-4o-mini
+api_key   : sk-...****    (前 4 位 + ****，完整 key 不会泄露)
+timeout   : 60.0s
+retries   : 2
+```
+
+如果 ping 返回 `api_key: (unset)`，说明 env 没传进去（HTTP 模式正常现象，stdio 模式请检查配置文件里的 `env` 块）。
 
 ---
 
