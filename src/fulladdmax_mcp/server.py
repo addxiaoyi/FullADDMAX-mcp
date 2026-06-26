@@ -27,7 +27,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from . import __version__
 from . import context as ctx_mod
-from . import mapreduce, obsidian, orchestrator, parallel, swarm
+from . import mapreduce, obsidian, orchestrator, parallel, rate_limit, swarm, usage
 from .errors import FullADDMAXError
 from .llm import LLMConfig, get_config, set_config
 from .tools import (
@@ -394,6 +394,254 @@ def purge_expired_sessions(ttl_seconds: float = 0) -> str:
     except Exception as e:  # noqa: BLE001
         return f"ERROR: {type(e).__name__}: {e}"
     return f"purged: {count} session(s)"
+
+
+# ---------------------------------------------------------------------------
+# Token usage + rate limiting
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def configure_rate_limit(
+    global_rpm: int = 0,
+    global_tpm: int = 0,
+    per_session_rpm: int = 0,
+    per_session_tpm: int = 0,
+    default_estimated_tokens: int = 1024,
+) -> str:
+    """Configure the token-bucket rate limiter.
+
+    All four limits are 0 (unlimited) by default. Set a value to
+    enable the corresponding bucket. The global bucket covers every
+    LLM call; the per-session bucket prevents one session from
+    monopolising the global budget. Bursts are allowed up to 10% of
+    the per-minute rate (minimum 1).
+
+    Args:
+        global_rpm: Global requests per minute (0 = unlimited).
+        global_tpm: Global tokens per minute (0 = unlimited).
+        per_session_rpm: Per-session requests per minute.
+        per_session_tpm: Per-session tokens per minute.
+        default_estimated_tokens: Fallback estimated token cost
+            when the caller did not specify max_tokens (default 1024).
+    """
+    try:
+        rate_limit.configure(
+            global_rpm=global_rpm,
+            global_tpm=global_tpm,
+            per_session_rpm=per_session_rpm,
+            per_session_tpm=per_session_tpm,
+            default_estimated_tokens=default_estimated_tokens,
+        )
+    except Exception as e:  # noqa: BLE001
+        return f"ERROR: {type(e).__name__}: {e}"
+    return (
+        f"Configured rate limit: global {global_rpm}r/{global_tpm}t per-min, "
+        f"per-session {per_session_rpm}r/{per_session_tpm}t per-min "
+        f"(est={default_estimated_tokens})"
+    )
+
+
+@mcp.tool()
+def reset_rate_limit() -> str:
+    """Reset the rate limiter to unlimited."""
+    rate_limit.reset()
+    return "Rate limit reset to unlimited."
+
+
+@mcp.tool()
+def get_rate_limit_status() -> str:
+    """Return the current rate-limit configuration and bucket state.
+
+    Output is Markdown summary + JSON block of the limiter's
+    internal :func:`rate_limit.RateLimiter.snapshot`.
+    """
+    import json as _json
+
+    snap = rate_limit.get_limiter().snapshot()
+    cfg = snap["config"]
+    lines = [
+        f"Rate limit **{'enabled' if cfg['enabled'] else 'unlimited'}**:",
+        "",
+        f"- global_rpm: {cfg['global_rpm']}",
+        f"- global_tpm: {cfg['global_tpm']}",
+        f"- per_session_rpm: {cfg['per_session_rpm']}",
+        f"- per_session_tpm: {cfg['per_session_tpm']}",
+        f"- default_estimated_tokens: {cfg['default_estimated_tokens']}",
+        f"- active per-session buckets: {snap['per_session_count']}",
+        "",
+        "```json",
+        _json.dumps(snap, indent=2, default=str),
+        "```",
+    ]
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def get_usage_stats(
+    session_id: str = "",
+    model: str = "",
+    since_ts: float = 0.0,
+) -> str:
+    """Aggregate token usage and cost, optionally filtered.
+
+    Args:
+        session_id: If non-empty, restrict to a single session.
+        model: If non-empty, restrict to a single model.
+        since_ts: If > 0, only count records with ``ts >= since_ts``.
+
+    Returns a Markdown report + JSON block with totals, per-model
+    breakdown, and per-session breakdown.
+    """
+    import json as _json
+
+    summary = usage.store().summary(
+        session_id=session_id or None,
+        model=model or None,
+        since_ts=since_ts or None,
+    )
+    d = summary.to_dict()
+    lines = [
+        "Token usage summary:",
+        "",
+        f"- records: {d['records']}",
+        f"- prompt_tokens: {d['prompt_tokens']}",
+        f"- completion_tokens: {d['completion_tokens']}",
+        f"- total_tokens: {d['total_tokens']}",
+        f"- cost_usd: ${d['cost_usd']:.6f}",
+        "",
+        "By model:",
+        "",
+        "| model | records | prompt | completion | total | cost_usd |",
+        "|-------|---------|--------|------------|-------|----------|",
+    ]
+    for m, s in d["by_model"].items():
+        lines.append(
+            f"| `{m}` | {s['records']} | {s['prompt_tokens']} | "
+            f"{s['completion_tokens']} | {s['total_tokens']} | "
+            f"${s['cost_usd']:.6f} |"
+        )
+    if d["by_session"]:
+        lines.append("")
+        lines.append("By session:")
+        lines.append("")
+        lines.append(
+            "| session_id | records | prompt | completion | total | cost_usd |"
+        )
+        lines.append(
+            "|------------|---------|--------|------------|-------|----------|"
+        )
+        for s, sd in d["by_session"].items():
+            lines.append(
+                f"| `{s}` | {sd['records']} | {sd['prompt_tokens']} | "
+                f"{sd['completion_tokens']} | {sd['total_tokens']} | "
+                f"${sd['cost_usd']:.6f} |"
+            )
+    lines.append("")
+    lines.append("```json")
+    lines.append(_json.dumps(d, indent=2))
+    lines.append("```")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def list_usage_records(
+    session_id: str = "",
+    model: str = "",
+    since_ts: float = 0.0,
+    limit: int = 50,
+) -> str:
+    """List individual usage records, newest first.
+
+    Args:
+        session_id: Optional filter.
+        model: Optional filter.
+        since_ts: Optional filter (``ts >= since_ts``).
+        limit: Max records to return (default 50, max 1000).
+    """
+    import json as _json
+
+    limit = max(1, min(limit, 1000))
+    records = usage.store().list(
+        session_id=session_id or None,
+        model=model or None,
+        since_ts=since_ts or None,
+        limit=limit,
+    )
+    if not records:
+        return "No usage records."
+    lines = [
+        f"Last {len(records)} usage record(s):",
+        "",
+        "| ts | session | model | prompt | completion | total | cost_usd |",
+        "|----|---------|-------|--------|------------|-------|----------|",
+    ]
+    for r in records:
+        lines.append(
+            f"| {r.ts:.0f} | `{r.session_id}` | `{r.model}` | "
+            f"{r.prompt_tokens} | {r.completion_tokens} | {r.total_tokens} | "
+            f"${r.cost_usd:.6f} |"
+        )
+    lines.append("")
+    lines.append("```json")
+    lines.append(
+        _json.dumps(
+            [
+                {
+                    "ts": r.ts,
+                    "session_id": r.session_id,
+                    "model": r.model,
+                    "prompt_tokens": r.prompt_tokens,
+                    "completion_tokens": r.completion_tokens,
+                    "total_tokens": r.total_tokens,
+                    "cost_usd": r.cost_usd,
+                }
+                for r in records
+            ],
+            indent=2,
+        )
+    )
+    lines.append("```")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def reset_usage_stats() -> str:
+    """Delete all stored usage records. The pricing table is preserved."""
+    usage.store().clear()
+    return "Usage records cleared."
+
+
+@mcp.tool()
+def configure_pricing_override(
+    model: str,
+    prompt_per_million: float,
+    completion_per_million: float,
+) -> str:
+    """Override or add a model's pricing (USD per 1M tokens).
+
+    Affects cost calculations for *future* records only. Existing
+    records keep their original cost. Useful when you have an
+    enterprise contract with custom rates, or your model is not in
+    the built-in :data:`~fulladdmax_mcp.usage.MODEL_PRICING` table.
+
+    Args:
+        model: Model name to register (case-insensitive lookup).
+        prompt_per_million: USD per 1M prompt tokens.
+        completion_per_million: USD per 1M completion tokens.
+    """
+    if prompt_per_million < 0 or completion_per_million < 0:
+        return "ERROR: prices must be >= 0"
+    p = usage.ModelPricing(
+        model=model,
+        prompt_per_million=prompt_per_million,
+        completion_per_million=completion_per_million,
+    )
+    usage.store().set_pricing(model, p)
+    return (
+        f"Pricing for {model!r}: ${prompt_per_million}/1M prompt, "
+        f"${completion_per_million}/1M completion"
+    )
 
 
 # ---------------------------------------------------------------------------
