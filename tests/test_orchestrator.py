@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from fulladdmax_mcp import orchestrator as orch_mod
@@ -9,7 +10,7 @@ from fulladdmax_mcp.errors import EmptyInputError, LLMError
 
 
 async def test_orchestrator_pipeline(mock_chat, make_response):
-    route = mock_chat.post("/chat/completions").mock(
+    route = mock_chat.post("/v1/chat/completions").mock(
         side_effect=[
             make_response('{"subtasks":["do A","do B"]}'),
             make_response("result-A"),
@@ -35,7 +36,7 @@ async def test_orchestrator_bad_num_workers_raises():
 
 
 async def test_orchestrator_planner_bad_json_raises(mock_chat, make_response):
-    mock_chat.post("/chat/completions").mock(
+    mock_chat.post("/v1/chat/completions").mock(
         return_value=make_response("not json at all")
     )
     with pytest.raises(LLMError, match="non-JSON"):
@@ -43,7 +44,7 @@ async def test_orchestrator_planner_bad_json_raises(mock_chat, make_response):
 
 
 async def test_orchestrator_planner_empty_list_raises(mock_chat, make_response):
-    mock_chat.post("/chat/completions").mock(
+    mock_chat.post("/v1/chat/completions").mock(
         return_value=make_response('{"subtasks": []}')
     )
     with pytest.raises(LLMError, match="non-empty"):
@@ -51,26 +52,25 @@ async def test_orchestrator_planner_empty_list_raises(mock_chat, make_response):
 
 
 async def test_orchestrator_worker_failure_recorded_but_continues(
-    mock_chat, make_response
+    mock_chat, make_response, make_error
 ):
-    """One worker fails, the other succeeds -> synthesis still runs."""
-    import httpx
+    """One worker fails, the other succeeds -> synthesis still runs.
 
-    def planner(req):
-        return make_response('{"subtasks":["A","B"]}')
-
-    def worker_a(req):
-        return make_response("ok-A")
-
-    def worker_b(req):
-        return httpx.Response(500, text="oops")
-
-    def synth(req):
-        return make_response("partial final")
-
-    route = mock_chat.post("/chat/completions").mock(
-        side_effect=[planner, worker_a, worker_b, synth]
+    The 5xx worker will be retried once by the LLM client, so the mock
+    returns 500 for the first call and 200 on the retry.
+    """
+    responses = iter(
+        [
+            make_response('{"subtasks":["A","B"]}'),
+            make_response("ok-A"),
+            make_error(500, "oops"),
+            make_response("ok-B-after-retry"),
+            make_response("partial final"),
+        ]
+    )
+    route = mock_chat.post("/v1/chat/completions").mock(
+        side_effect=lambda req: next(responses)
     )
     out = await orch_mod.run("x", num_workers=2)
     assert "partial final" in out
-    assert route.call_count == 4
+    assert route.call_count == 5

@@ -6,8 +6,7 @@ from fulladdmax_mcp.server import mcp
 
 
 def test_tools_registered():
-    # FastMCP stores tools in an internal manager.
-    manager = getattr(mcp, "_tool_manager", None) or getattr(mcp, "_tool_manager", None)
+    manager = getattr(mcp, "_tool_manager", None)
     assert manager is not None, "FastMCP has no _tool_manager attribute"
     names = set(manager._tools.keys())
     expected = {

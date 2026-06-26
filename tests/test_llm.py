@@ -10,7 +10,7 @@ from fulladdmax_mcp.llm import LLMConfig, get_client, set_config
 
 
 async def test_chat_success(mock_chat, make_response):
-    route = mock_chat.post("/chat/completions").mock(
+    route = mock_chat.post("/v1/chat/completions").mock(
         return_value=make_response("hello world")
     )
     out = await get_client().chat([{"role": "user", "content": "hi"}])
@@ -25,7 +25,7 @@ async def test_chat_unconfigured_raises():
 
 
 async def test_chat_4xx_no_retry(mock_chat, make_error):
-    route = mock_chat.post("/chat/completions").mock(
+    route = mock_chat.post("/v1/chat/completions").mock(
         return_value=make_error(401, "bad key")
     )
     with pytest.raises(LLMError, match="HTTP 401"):
@@ -34,17 +34,17 @@ async def test_chat_4xx_no_retry(mock_chat, make_error):
 
 
 async def test_chat_5xx_retries_then_raises(mock_chat, make_error):
-    route = mock_chat.post("/chat/completions").mock(
+    route = mock_chat.post("/v1/chat/completions").mock(
         return_value=make_error(503, "try later")
     )
     with pytest.raises(LLMError, match="HTTP 503"):
         await get_client().chat([{"role": "user", "content": "hi"}])
-    # 1 initial + 1 retry
+    # 1 initial + 1 retry (max_retries=1 from fixture)
     assert route.call_count == 2
 
 
 async def test_chat_5xx_then_success(mock_chat, make_error, make_response):
-    route = mock_chat.post("/chat/completions").mock(
+    route = mock_chat.post("/v1/chat/completions").mock(
         side_effect=[
             make_error(502, "bad gateway"),
             make_response("recovered"),
@@ -56,7 +56,7 @@ async def test_chat_5xx_then_success(mock_chat, make_error, make_response):
 
 
 async def test_chat_timeout_raises_llm_timeout(mock_chat):
-    mock_chat.post("/chat/completions").mock(
+    mock_chat.post("/v1/chat/completions").mock(
         side_effect=httpx.TimeoutException("read timed out")
     )
     with pytest.raises(LLMTimeoutError):
@@ -64,7 +64,7 @@ async def test_chat_timeout_raises_llm_timeout(mock_chat):
 
 
 async def test_chat_malformed_payload_raises(mock_chat, make_error):
-    mock_chat.post("/chat/completions").mock(
+    mock_chat.post("/v1/chat/completions").mock(
         return_value=make_error(200, '{"unexpected": true}')
     )
     with pytest.raises(LLMError, match="malformed payload"):

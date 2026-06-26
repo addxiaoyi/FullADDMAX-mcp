@@ -9,7 +9,7 @@ from fulladdmax_mcp.errors import EmptyInputError, HandoffError
 
 
 async def test_swarm_handoff_chain(mock_chat, make_response):
-    route = mock_chat.post("/chat/completions").mock(
+    route = mock_chat.post("/v1/chat/completions").mock(
         side_effect=[
             make_response('{"next": "coder", "message": "from researcher"}'),
             make_response('{"next": "writer", "message": "from coder"}'),
@@ -22,7 +22,7 @@ async def test_swarm_handoff_chain(mock_chat, make_response):
 
 
 async def test_swarm_drops_to_done_after_max_handoffs(mock_chat, make_response):
-    route = mock_chat.post("/chat/completions").mock(
+    route = mock_chat.post("/v1/chat/completions").mock(
         side_effect=[
             make_response('{"next": "coder", "message": "p1"}'),
             make_response('{"next": "writer", "message": "p2"}'),
@@ -35,13 +35,13 @@ async def test_swarm_drops_to_done_after_max_handoffs(mock_chat, make_response):
 
 
 async def test_swarm_bad_json_raises(mock_chat, make_response):
-    mock_chat.post("/chat/completions").mock(return_value=make_response("not json"))
+    mock_chat.post("/v1/chat/completions").mock(return_value=make_response("not json"))
     with pytest.raises(HandoffError, match="did not return JSON"):
         await swarm_mod.run("researcher", "x")
 
 
 async def test_swarm_unknown_next_raises(mock_chat, make_response):
-    mock_chat.post("/chat/completions").mock(
+    mock_chat.post("/v1/chat/completions").mock(
         return_value=make_response('{"next": "ghost", "message": "x"}')
     )
     with pytest.raises(HandoffError, match="unknown agent"):
@@ -49,7 +49,7 @@ async def test_swarm_unknown_next_raises(mock_chat, make_response):
 
 
 async def test_swarm_empty_message_raises(mock_chat, make_response):
-    mock_chat.post("/chat/completions").mock(
+    mock_chat.post("/v1/chat/completions").mock(
         return_value=make_response('{"next": "coder", "message": "  "}')
     )
     with pytest.raises(HandoffError, match="empty"):

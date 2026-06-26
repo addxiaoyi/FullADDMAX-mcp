@@ -9,7 +9,7 @@ from fulladdmax_mcp.errors import EmptyInputError
 
 
 async def test_mapreduce_default_templates(mock_chat, make_response):
-    route = mock_chat.post("/chat/completions").mock(
+    route = mock_chat.post("/v1/chat/completions").mock(
         side_effect=[
             make_response("mapped-1"),
             make_response("mapped-2"),
@@ -24,7 +24,7 @@ async def test_mapreduce_default_templates(mock_chat, make_response):
 async def test_mapreduce_custom_templates(mock_chat, make_response):
     map_prompt = "MAP[{item}]"
     reduce_prompt = "REDUCE[{results}]"
-    route = mock_chat.post("/chat/completions").mock(
+    route = mock_chat.post("/v1/chat/completions").mock(
         side_effect=[
             make_response("m1"),
             make_response("m2"),
@@ -34,7 +34,6 @@ async def test_mapreduce_custom_templates(mock_chat, make_response):
     out = await mr_mod.run(["x", "y"], map_prompt=map_prompt, reduce_prompt=reduce_prompt)
     assert out == "R"
     assert route.call_count == 3
-    # The map call body should contain the substituted item.
     body = route.calls[0].request.content.decode()
     assert "MAP[x]" in body
     body2 = route.calls[1].request.content.decode()

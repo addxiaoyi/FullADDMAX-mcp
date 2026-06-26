@@ -6,7 +6,7 @@ import pytest
 import respx
 from httpx import Response
 
-import fulladdmax_mcp.llm as llm_mod
+import fulladdmax_mcp.llm as llm_mod  # noqa: F401  (imported for side effects in some tests)
 from fulladdmax_mcp.llm import LLMConfig, set_config
 
 
@@ -28,7 +28,13 @@ def _reset_llm_config():
 
 @pytest.fixture
 def mock_chat():
-    """Return a respx router that intercepts ``/v1/chat/completions`` calls."""
+    """Return a respx router that intercepts chat-completions calls.
+
+    Note: ``respx.mock(base_url=...)`` controls which *hosts* are intercepted
+    (not the path), so the registered route must use the full path that the
+    httpx client (which carries its own ``/v1`` base_url) will request:
+    i.e. ``/v1/chat/completions``.
+    """
     with respx.mock(base_url="https://mock.local", assert_all_called=False) as router:
         yield router
 

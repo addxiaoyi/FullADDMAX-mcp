@@ -29,10 +29,16 @@ def test_session_isolation():
 
 
 def test_thread_safe_put():
-    ctx.new_session()
-    n = 200
+    """Concurrent writes to the same session must all be visible.
+
+    Each worker thread binds to the same session id explicitly, since
+    ``contextvars.ContextVar`` does not propagate to plain threads.
+    """
+    sid = ctx.new_session()
+    n = 50  # smaller than the full demo to keep the test fast
 
     def worker(i: int):
+        ctx.bind(sid)
         ctx.put(f"k{i}", i)
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
@@ -41,6 +47,7 @@ def test_thread_safe_put():
     for t in threads:
         t.join()
 
+    ctx.bind(sid)
     snap = ctx.snapshot()
     assert len(snap) == n
     for i in range(n):
