@@ -551,12 +551,16 @@ loop (max 6 steps):
 | `obsidian_search_notes` | 关键字搜索笔记（case-insensitive 默认） |
 | `obsidian_write_note` | 创建/覆盖一个 .md 笔记（带 frontmatter） |
 | `obsidian_append_note` | 追加内容到 .md 笔记（保留 frontmatter） |
+| `register_swarm_agent` | 注册自定义 Swarm agent profile（name / system / description） |
+| `unregister_swarm_agent` | 取消注册某个 Swarm agent |
+| `list_swarm_agents` | 列出当前所有 Swarm agent + JSON |
 | `orchestrator_run` | Orchestrator-Workers：planner 拆任务 → N 个 worker 并行 → synthesizer 汇总 |
 | `parallel_agents_run` | 并行子代理：最多 10 个并发，每个失败单独记录不中断整体 |
 | `map_reduce_run` | Map-Reduce：map 阶段并行分片，reduce 阶段合并 |
-| `swarm_run` | Swarm：内置 researcher / coder / critic / writer 4 个 agent，强制 JSON 交接 |
+| `swarm_run` | Swarm：内置 researcher / coder / critic / writer 4 个 agent，支持 JSON 交接 + 自定义 profile |
 
 > `orchestrator_run` / `parallel_agents_run` / `map_reduce_run` / `swarm_run` 都接 `tools: list[str] | None` 参数（默认 `None` = 用全部已注册工具，`[]` = 关闭 function-calling）。
+> `swarm_run` 还接 `agents_json: str` 参数（默认 `""` = 用模块级 registry，JSON 数组 = 一次性覆盖本次调用的 agent 集）。
 > 所有 `obsidian_*` tool 都接 `vault_path: str` 参数（vault 根目录的绝对路径），同一个 server 可以在一个 session 内服务多个 vault。
 
 ### `orchestrator_run(task, num_workers=3, timeout=300)`
@@ -722,7 +726,7 @@ mcp dev src/fulladdmax_mcp/server.py
 - [x] HTTP / Streamable-HTTP transport（v0.2.0）
 - [x] Function calling / agent-callable tools（v0.3.0）
 - [x] Obsidian vault 双向读写集成（v0.3.0）
-- [ ] 自定义 Swarm agent profile 注册 API
+- [x] 自定义 Swarm agent profile 注册 API（v0.3.0）
 - [ ] 持久化 context（Redis / SQLite 后端）
 - [ ] Token 用量统计 & 成本控制
 - [ ] 限流令牌桶（避免打爆 LLM 限流）
@@ -838,6 +842,103 @@ tags: [mcp, agent]
 # 项目路线图
 ...
 ```
+
+---
+
+## 🐝 自定义 Swarm Agent / Dynamic Agent Profiles
+
+Swarm 内置 4 个 agent profile（`researcher` / `coder` / `critic` / `writer`）。`register_swarm_agent` 让 MCP 客户端（或 Python 脚本）**动态注册/覆盖**任意数量的 agent。注册后所有后续 `swarm_run` 都看得到，跨请求持久化（只要 server 还活着）。
+
+### 三种方式提供 agent
+
+| 方式 | 用法 | 持久化 |
+|------|------|--------|
+| **内置**（默认） | 4 个 built-in 自动 seed，零配置 | 是 |
+| **`register_swarm_agent`** | 动态注册 / 覆盖；server 启动后任意时间调用 | 是（直到 unregister） |
+| **`swarm_run(agents_json=...)`** | 一次性传 JSON 数组，只对本次调用生效 | 否 |
+
+### MCP 客户端用法
+
+**1. 列出当前 agent：**
+
+> "调 fulladdmax 的 `list_swarm_agents`"
+
+返回 Markdown 报告 + JSON 块（机器可读）：
+
+```
+Registered swarm agents (4):
+- **coder** — Implements and reviews code; explains trade-offs.
+- **critic** — Stress-tests the proposal and surfaces risks.
+- **researcher** — Gathers information, surfaces options, proposes hypotheses.
+- **writer** — Synthesizes the final user-facing response.
+```
+
+**2. 注册一个自定义 agent：**
+
+> "用 `register_swarm_agent` 注册 `legal`，system 是 'You are a legal reviewer. Be precise about liability. Always reply with JSON {next, message}.'"
+
+→ `"registered: legal (total: 5 agent(s))"`
+
+**3. 用自定义 agent 跑 swarm：**
+
+> "用 `swarm_run` 跑 '撰写一份产品发布合规检查报告'，initial_agent=researcher，handoff 给 legal，再 handoff 给 writer"
+
+模型可能会这样交接：
+
+```
+researcher  → legal       "Here is the product spec, please review for legal issues."
+legal       → writer      "Compliance check: no major issues, see notes."
+writer      → DONE        "Final report: ..."
+```
+
+**4. 一次性传入（不污染 registry）：**
+
+> "用 `swarm_run` 跑 '分析竞品'，initial_agent=analyst，agents_json 是 '[{...}, {...}]'"
+
+JSON 格式：
+
+```json
+[
+  {"name": "analyst", "system": "You are a market analyst. Reply with JSON.", "description": "Market research."},
+  {"name": "strategist", "system": "You are a strategist. Reply with JSON.", "description": "Strategic synthesis."}
+]
+```
+
+→ 本次调用只看到这两个 agent；registry 不动。
+
+### Python 用法
+
+```python
+from fulladdmax_mcp import swarm
+
+# 注册一个（覆盖默认 researcher）
+swarm.register_swarm_agent(
+    name="researcher",
+    system=(
+        "You are a senior research analyst. Cross-check claims across "
+        "multiple sources. Always reply with JSON {next, message}."
+    ),
+    description="Senior cross-validated researcher.",
+    overwrite=True,
+)
+
+# 看下注册表
+for a in swarm.list_swarm_agents():
+    print(f"  {a.name}: {a.description}")
+
+# 跑一次
+import asyncio
+out = asyncio.run(swarm.run("researcher", "What is the current state of MCP?"))
+print(out)
+```
+
+### 安全保证
+
+- `register` 用 `RLock` 保护，多线程并发安全
+- 重复名默认报错（`SwarmAgentAlreadyExistsError`），必须 `overwrite=True` 才覆盖
+- 空 name / 空 system prompt 被拒绝
+- Built-in 可被删除（`unregister_swarm_agent("writer")`）— 除非重启进程，不会自动恢复
+- `swarm_run` 在 `initial_agent` 不在 agent 集时立即抛 `EmptyInputError`，不会在 LLM 调用后才报错
 
 ---
 
