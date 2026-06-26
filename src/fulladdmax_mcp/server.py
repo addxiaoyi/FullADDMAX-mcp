@@ -11,14 +11,17 @@ Exposes six tools over the MCP stdio transport:
 
 Run with::
 
-    fulladdmax-mcp             # stdio (default)
-    python -m fulladdmax_mcp   # same
+    fulladdmax-mcp             # stdio (default; for Claude Desktop / Cursor / Trae)
+    fulladdmax-mcp --transport streamable-http --host 127.0.0.1 --port 8000
+    python -m fulladdmax_mcp.server --transport http
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
-from typing import Any
+import sys
+from typing import Literal
 
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -232,12 +235,98 @@ async def swarm_run(
 # Entry point
 # ---------------------------------------------------------------------------
 
+Transport = Literal["stdio", "sse", "streamable-http"]
 
-def main() -> None:
-    """Run the FullADDMAX-mcp server on stdio."""
-    log.info("Starting FullADDMAX-mcp v%s", __version__)
-    mcp.run()
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="fulladdmax-mcp",
+        description=(
+            "FullADDMAX-mcp: multi-agent orchestration MCP server. "
+            "Runs as a stdio MCP server (default) or as an HTTP/SSE server."
+        ),
+    )
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "sse", "streamable-http", "http"),
+        default="stdio",
+        help=(
+            "MCP transport to use. 'stdio' (default) for Claude Desktop / "
+            "Cursor / Trae; 'streamable-http' (alias 'http') for HTTP clients. "
+            "'sse' is kept for backward compatibility."
+        ),
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to bind for HTTP transports (default: 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to bind for HTTP transports (default: 8000).",
+    )
+    parser.add_argument(
+        "--mount-path",
+        default=None,
+        help=(
+            "Optional URL mount path for HTTP transports "
+            "(e.g. '/mcp'). Defaults to FastMCP's built-in path."
+        ),
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        help="Python logging level (default: INFO).",
+    )
+    return parser
+
+
+def _normalize_transport(value: str) -> Transport:
+    """Map the user-facing alias ``http`` onto ``streamable-http``."""
+    if value == "http":
+        return "streamable-http"
+    # ``value`` is one of "stdio" / "sse" / "streamable-http" by the choices.
+    return value  # type: ignore[return-value]
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Run the FullADDMAX-mcp server.
+
+    Parses CLI arguments, configures the FastMCP settings (host/port for
+    HTTP transports) and starts the chosen transport.
+
+    Examples::
+
+        fulladdmax-mcp                              # stdio (default)
+        fulladdmax-mcp --transport streamable-http  # HTTP on 127.0.0.1:8000
+        fulladdmax-mcp --transport http --host 0.0.0.0 --port 9000
+    """
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+
+    logging.getLogger().setLevel(args.log_level)
+    transport: Transport = _normalize_transport(args.transport)
+
+    if transport != "stdio":
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        log.info(
+            "Starting FullADDMAX-mcp v%s on %s://%s:%s (transport=%s, mount=%s)",
+            __version__,
+            "http",
+            args.host,
+            args.port,
+            transport,
+            args.mount_path or "(default)",
+        )
+    else:
+        log.info("Starting FullADDMAX-mcp v%s on stdio", __version__)
+
+    mcp.run(transport=transport, mount_path=args.mount_path)
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

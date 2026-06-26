@@ -10,7 +10,10 @@ Configure your LLM endpoint first via the ``configure_llm`` tool or
 ``FULLADDMAX_*`` environment variables.
 """
 
-from .server import mcp
+__version__ = "0.2.0"
 
-__version__ = "0.1.0"
+# Import ``mcp`` from server last so the version attribute above is already
+# defined when ``server.py`` references ``fulladdmax_mcp.__version__``.
+from .server import mcp  # noqa: E402
+
 __all__ = ["mcp", "__version__"]
