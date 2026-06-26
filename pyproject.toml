@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fulladdmax-mcp"
+version = "0.1.0"
+description = "MCP server for multi-agent orchestration (Orchestrator-Workers, Parallel, Map-Reduce, Swarm)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "addxiaoyi" }]
+keywords = ["mcp", "agent", "orchestrator", "multi-agent", "swarm", "map-reduce"]
+dependencies = [
+    "mcp[cli]>=1.0,<2.0",
+    "httpx>=0.27",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+fulladdmax-mcp = "fulladdmax_mcp.server:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra -q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "W"]
+ignore = ["E501"]
