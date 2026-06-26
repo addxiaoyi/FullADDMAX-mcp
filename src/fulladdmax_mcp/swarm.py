@@ -7,6 +7,13 @@ system prompt. The LLM is forced to reply with a strict JSON envelope::
 
 The orchestrator routes the message to the next agent until the LLM
 emits ``"next": "DONE"`` or ``max_handoffs`` is reached.
+
+If ``tools`` is provided, each turn uses the ``chat_with_tools`` dispatch
+loop instead of plain ``chat``. The LLM may call any registered tool
+mid-turn, but must still finish the turn with a JSON ``{next, message}``
+envelope (a tool-call-only turn is treated as an empty message, which is
+rejected by ``_parse_reply`` so the agent is forced to keep using tools
+or produce a valid JSON answer).
 """
 
 from __future__ import annotations
@@ -15,10 +22,12 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from .context import new_session, put
 from .errors import EmptyInputError, HandoffError, ToolTimeoutError
 from .llm import get_client
+from .tools import openai_tool_specs
 
 log = logging.getLogger(__name__)
 
@@ -112,8 +121,19 @@ async def run(
     max_handoffs: int = 8,
     agents: dict[str, Agent] | None = None,
     timeout: float = 300.0,
+    tools: list[str] | None = None,
 ) -> str:
-    """Execute the Swarm workflow and return the final agent's message."""
+    """Execute the Swarm workflow and return the final agent's message.
+
+    Args:
+        initial_agent: Name of the agent to start with.
+        task: The user task.
+        max_handoffs: Maximum number of handoffs (each turn is one handoff).
+        agents: Custom agent registry; defaults to the four built-in profiles.
+        timeout: Overall timeout in seconds.
+        tools: Whitelist of tool names to expose. ``None`` = every
+            registered tool. ``[]`` = no tool-calling.
+    """
     if not task or not task.strip():
         raise EmptyInputError("swarm_run: 'task' must be a non-empty string.")
     if max_handoffs < 0:
@@ -125,9 +145,13 @@ async def run(
             f"initial_agent {initial_agent!r} not in registered agents {list(active)}"
         )
 
+    tool_specs = _resolve_tool_specs(tools)
+    use_tools = bool(tool_specs)
+
     new_session()
     put("initial_agent", initial_agent)
     put("task", task)
+    put("tools", [t["function"]["name"] for t in tool_specs])
 
     current = initial_agent
     history: list[dict] = []
@@ -140,7 +164,7 @@ async def run(
         async with asyncio.timeout(timeout):
             for turn in range(max_handoffs + 1):
                 agent = active[current]
-                msgs: list[dict] = [
+                msgs: list[dict[str, Any]] = [
                     {"role": "system", "content": f"{agent.system}\n\n{intro}"},
                 ]
                 for h in history:
@@ -155,7 +179,17 @@ async def run(
                 else:
                     msgs.append({"role": "user", "content": "Continue."})
 
-                raw = await client.chat(msgs)
+                if use_tools:
+                    from .tools import registry as tool_registry
+
+                    text, _ = await client.chat_with_tools(
+                        msgs,
+                        executor=tool_registry.dispatch_executor,
+                        max_steps=6,
+                    )
+                    raw = text
+                else:
+                    raw = await client.chat(msgs)
                 nxt, msg = _parse_reply(raw, valid)
                 history.append({"from": current, "to": nxt, "message": msg})
 
@@ -169,3 +203,17 @@ async def run(
 
     # Unreachable; the loop always returns or raises.
     raise RuntimeError("swarm_run exited without returning or raising")
+
+
+def _resolve_tool_specs(whitelist: list[str] | None) -> list[dict[str, Any]]:
+    all_specs = openai_tool_specs()
+    if whitelist is None:
+        return all_specs
+    if not whitelist:
+        return []
+    wanted = set(whitelist)
+    selected = [s for s in all_specs if s["function"]["name"] in wanted]
+    missing = wanted - {s["function"]["name"] for s in selected}
+    if missing:
+        log.warning("tools not found in registry (skipped): %s", sorted(missing))
+    return selected

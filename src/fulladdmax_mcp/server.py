@@ -29,6 +29,13 @@ from . import __version__
 from . import mapreduce, orchestrator, parallel, swarm
 from .errors import FullADDMAXError
 from .llm import LLMConfig, get_config, set_config
+from .tools import (
+    DEFAULT_EXCLUDE,
+    ToolRegistry,
+    openai_tool_specs,
+    registry as tool_registry,
+    register_tool,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -116,6 +123,55 @@ def configure_llm(
 
 
 # ---------------------------------------------------------------------------
+# Tool registry
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def list_agent_tools() -> str:
+    """List the tools currently registered for agent function-calling.
+
+    The agent workflows (orchestrator_run, parallel_agents_run, etc.) can
+    optionally pass these tools to the LLM so it can call them mid-loop.
+    Built-in orchestration tools (orchestrator_run, parallel_agents_run,
+    map_reduce_run, swarm_run, ping, configure_llm) are excluded by default
+    to prevent self-recursion.
+
+    Returns a Markdown report, one ``- name`` bullet per tool, plus a
+    JSON block of the OpenAI tool specs that are actually sent to the LLM.
+    """
+    if not tool_registry.names():
+        return (
+            "No agent tools registered. Use `register_tool` to add one, "
+            "or import fulladdmax_mcp.tools in your own MCP server."
+        )
+    lines = ["Registered agent tools:", ""]
+    for name in tool_registry.names():
+        reg = tool_registry.get(name)
+        assert reg is not None
+        lines.append(f"- **{name}** — {reg.description or '(no description)'}")
+    lines.append("")
+    lines.append("OpenAI specs (excluded: " + ", ".join(sorted(DEFAULT_EXCLUDE)) + "):")
+    lines.append("```json")
+    import json as _json
+
+    lines.append(_json.dumps(openai_tool_specs(), indent=2, ensure_ascii=False))
+    lines.append("```")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def unregister_agent_tool(name: str) -> str:
+    """Unregister a previously registered agent tool by name.
+
+    No-op (and returns 'skipped') if the tool was not registered.
+    """
+    if tool_registry.unregister(name):
+        return f"Unregistered: {name}"
+    return f"skipped: {name!r} is not registered"
+
+
+# ---------------------------------------------------------------------------
 # Workflows
 # ---------------------------------------------------------------------------
 
@@ -125,6 +181,7 @@ async def orchestrator_run(
     task: str,
     num_workers: int = 3,
     timeout: float = 300.0,
+    tools: list[str] | None = None,
     ctx: Context | None = None,
 ) -> str:
     """Orchestrator-Workers: a planner agent decomposes ``task`` into
@@ -135,11 +192,16 @@ async def orchestrator_run(
         task: The high-level task to accomplish.
         num_workers: Number of parallel workers (1-10, default 3).
         timeout: Overall timeout in seconds.
+        tools: Optional whitelist of agent tool names the workers may
+            call. ``None`` (default) = every registered tool. ``[]`` =
+            disable tool-calling entirely. See ``list_agent_tools``.
     """
     if ctx is not None:
         await ctx.info(f"orchestrator_run start: workers={num_workers}")
     try:
-        return await orchestrator.run(task, num_workers=num_workers, timeout=timeout)
+        return await orchestrator.run(
+            task, num_workers=num_workers, timeout=timeout, tools=tools
+        )
     except FullADDMAXError as e:
         return f"ERROR: {type(e).__name__}: {e}"
 
@@ -149,6 +211,7 @@ async def parallel_agents_run(
     tasks: list[str],
     max_concurrent: int = 10,
     timeout: float = 300.0,
+    tools: list[str] | None = None,
 ) -> str:
     """Run multiple independent tasks in parallel (max 10 concurrent).
 
@@ -159,10 +222,13 @@ async def parallel_agents_run(
         tasks: List of independent task prompts (1-10 entries).
         max_concurrent: Concurrency cap (1-10).
         timeout: Overall timeout in seconds.
+        tools: Optional whitelist of tool names each task may call.
+            ``None`` (default) = every registered tool. ``[]`` = no
+            tool-calling. See ``list_agent_tools``.
     """
     try:
         return await parallel.run(
-            tasks, max_concurrent=max_concurrent, timeout=timeout
+            tasks, max_concurrent=max_concurrent, timeout=timeout, tools=tools
         )
     except FullADDMAXError as e:
         return f"ERROR: {type(e).__name__}: {e}"
@@ -175,6 +241,7 @@ async def map_reduce_run(
     reduce_prompt: str = "",
     max_concurrent: int = 10,
     timeout: float = 600.0,
+    tools: list[str] | None = None,
 ) -> str:
     """Map-Reduce: process ``items`` in parallel (map), then merge (reduce).
 
@@ -189,6 +256,9 @@ async def map_reduce_run(
         reduce_prompt: Template containing ``{results}``.
         max_concurrent: Map-phase concurrency (1-10).
         timeout: Overall timeout in seconds.
+        tools: Optional whitelist of tool names the map / reduce phases
+            may call. ``None`` (default) = every registered tool. ``[]``
+            = no tool-calling.
     """
     try:
         return await mapreduce.run(
@@ -197,6 +267,7 @@ async def map_reduce_run(
             reduce_prompt=reduce_prompt or mapreduce.DEFAULT_REDUCE,
             max_concurrent=max_concurrent,
             timeout=timeout,
+            tools=tools,
         )
     except FullADDMAXError as e:
         return f"ERROR: {type(e).__name__}: {e}"
@@ -208,6 +279,7 @@ async def swarm_run(
     task: str,
     max_handoffs: int = 8,
     timeout: float = 300.0,
+    tools: list[str] | None = None,
 ) -> str:
     """Swarm multi-agent collaboration with lightweight handoffs.
 
@@ -222,10 +294,13 @@ async def swarm_run(
         task: The user task to accomplish.
         max_handoffs: Maximum agent-to-agent handoffs (default 8).
         timeout: Overall timeout in seconds.
+        tools: Optional whitelist of tool names each agent may call.
+            ``None`` (default) = every registered tool. ``[]`` = no
+            tool-calling.
     """
     try:
         return await swarm.run(
-            initial_agent, task, max_handoffs=max_handoffs, timeout=timeout
+            initial_agent, task, max_handoffs=max_handoffs, timeout=timeout, tools=tools
         )
     except FullADDMAXError as e:
         return f"ERROR: {type(e).__name__}: {e}"

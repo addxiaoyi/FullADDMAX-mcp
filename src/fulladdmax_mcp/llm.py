@@ -11,10 +11,11 @@ invoked by the ``configure_llm`` MCP tool.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable
 
 import httpx
 
@@ -24,6 +25,14 @@ log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o-mini"
+
+# Type alias for an OpenAI-compatible tool schema:
+#   {"type": "function", "function": {"name": ..., "description": ..., "parameters": {...}}}
+ToolSpec = dict[str, Any]
+
+# Returned by :meth:`LLMClient.chat_with_tools` when the model emits a
+# non-empty ``tool_calls`` list.
+ToolCall = dict[str, Any]  # {"id", "type": "function", "function": {"name", "arguments"}}
 
 
 @dataclass
@@ -37,6 +46,12 @@ class LLMConfig:
     max_tokens: int = 2048
     timeout: float = 60.0
     max_retries: int = 2
+    # Optional list of OpenAI-compatible tool specs made available to every
+    # chat completion. Mutate via :func:`set_config` or pass ``tools=`` to
+    # :meth:`LLMClient.chat` / :meth:`LLMClient.chat_with_tools`.
+    tools: list[ToolSpec] = field(default_factory=list)
+    # "auto" (default), "none", or {"type": "function", "function": {"name": "x"}}
+    tool_choice: str | dict[str, Any] = "auto"
 
     @classmethod
     def from_env(cls) -> "LLMConfig":
@@ -80,11 +95,12 @@ class LLMClient:
             )
         return self._client
 
-    async def chat(self, messages: list[dict[str, str]], **overrides: Any) -> str:
-        """Send a chat completion request and return the assistant text.
-
-        Retries on network errors and 5xx responses (exponential backoff).
-        4xx responses are surfaced immediately as :class:`LLMError`.
+    async def _request(
+        self, messages: list[dict[str, Any]], **overrides: Any
+    ) -> dict[str, Any]:
+        """Low-level: send a single chat-completions request, return the
+        raw ``message`` dict from ``choices[0]``. Raises :class:`LLMError`
+        on transport / 4xx errors; retries on 5xx + network errors.
         """
         if not self.config.api_key:
             raise LLMError(
@@ -98,6 +114,12 @@ class LLMClient:
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
         }
+        # Inject tool specs only when the LLMConfig has any, unless the caller
+        # passed an explicit ``tools=`` override (e.g. None to disable for one
+        # call, or a custom list).
+        if self.config.tools and "tools" not in overrides:
+            payload["tools"] = list(self.config.tools)
+            payload["tool_choice"] = overrides.pop("tool_choice", self.config.tool_choice)
         payload.update(overrides)
 
         client = await self._get_client()
@@ -114,11 +136,16 @@ class LLMClient:
                 if resp.status_code < 400:
                     data = resp.json()
                     try:
-                        return str(data["choices"][0]["message"]["content"])
+                        message = data["choices"][0]["message"]
                     except (KeyError, IndexError, TypeError) as e:
                         raise LLMError(
                             f"LLM returned malformed payload: {e}; body={str(data)[:300]}"
                         ) from e
+                    if not isinstance(message, dict):
+                        raise LLMError(
+                            f"LLM returned malformed payload: message is {type(message).__name__}"
+                        )
+                    return message
                 # 4xx -> permanent; 5xx -> retriable
                 body_preview = resp.text[:300]
                 err = LLMError(f"LLM HTTP {resp.status_code}: {body_preview}")
@@ -139,6 +166,117 @@ class LLMClient:
 
         assert last_exc is not None
         raise last_exc
+
+    async def chat(self, messages: list[dict[str, str]], **overrides: Any) -> str:
+        """Send a chat completion request and return the assistant text.
+
+        Any ``tool_calls`` returned by the model are ignored — the text
+        content is returned as-is. Use :meth:`chat_with_tools` for an
+        end-to-end tool dispatch loop.
+        """
+        message = await self._request(messages, **overrides)
+        return str(message.get("content") or "")
+
+    async def chat_raw(
+        self, messages: list[dict[str, Any]], **overrides: Any
+    ) -> dict[str, Any]:
+        """Send a chat completion request and return the full ``message``
+        dict (with ``content``, ``tool_calls``, ``role``, ...).
+
+        Useful for callers that want to inspect tool calls themselves.
+        """
+        return await self._request(messages, **overrides)
+
+    async def chat_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        executor: "Callable[[ToolCall], Awaitable[Any]]",
+        max_steps: int = 6,
+        **overrides: Any,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Run a tool-calling loop.
+
+        The LLM is invoked. If the response contains ``tool_calls``, each
+        call is dispatched to ``executor`` (which must return a JSON-
+        serialisable result string), the result is appended to the
+        conversation as a ``role: tool`` message, and the LLM is invoked
+        again. The loop terminates when:
+
+        * the LLM returns a message without ``tool_calls`` (text answer), or
+        * ``max_steps`` is reached, or
+        * ``executor`` raises (the error message is fed back to the LLM).
+
+        Returns ``(final_text, transcript)`` where ``transcript`` is a
+        list of ``{"role": "assistant"|"tool", ...}`` messages for
+        logging/debugging.
+        """
+        if max_steps < 1:
+            raise ValueError("max_steps must be >= 1")
+
+        transcript: list[dict[str, Any]] = []
+        # Local copy so we can mutate the conversation safely.
+        convo: list[dict[str, Any]] = list(messages)
+        last_text = ""
+        for step in range(max_steps):
+            message = await self._request(convo, **overrides)
+            transcript.append(message)
+            tool_calls = message.get("tool_calls") or []
+            if not tool_calls:
+                last_text = str(message.get("content") or "")
+                break
+
+            # Append the assistant message (with tool_calls) to the
+            # conversation so the LLM sees its own call when we add the
+            # tool result messages after.
+            convo.append(
+                {
+                    "role": "assistant",
+                    "content": message.get("content") or "",
+                    "tool_calls": tool_calls,
+                }
+            )
+
+            for call in tool_calls:
+                name = call.get("function", {}).get("name", "")
+                raw_args = call.get("function", {}).get("arguments", "{}")
+                call_id = call.get("id", "")
+                # OpenAI sends arguments as a JSON string. Parse it for the
+                # executor's convenience while preserving the raw string
+                # under ``_raw_arguments`` for callers that want it.
+                if isinstance(raw_args, str):
+                    try:
+                        parsed_args = json.loads(raw_args) if raw_args.strip() else {}
+                    except json.JSONDecodeError:
+                        parsed_args = raw_args  # let the executor see the bad string
+                else:
+                    parsed_args = raw_args
+                call_for_executor = {
+                    **call,
+                    "function": {**call.get("function", {}), "arguments": parsed_args},
+                    "_raw_arguments": raw_args,
+                }
+                try:
+                    result = await executor(call_for_executor)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("tool %s raised: %s", name, e)
+                    result = f"ERROR: {type(e).__name__}: {e}"
+                # Stringify the result for the LLM.
+                if not isinstance(result, str):
+                    try:
+                        result = json.dumps(result, ensure_ascii=False)
+                    except (TypeError, ValueError):
+                        result = str(result)
+                convo.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": result,
+                    }
+                )
+        else:
+            log.warning("chat_with_tools reached max_steps=%d without a final answer", max_steps)
+
+        return last_text, transcript
 
     async def aclose(self) -> None:
         if self._client is not None and not self._client.is_closed:
