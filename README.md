@@ -549,6 +549,13 @@ loop (max 6 steps):
 | `get_session` | 读一个 session 的完整 payload（JSON） |
 | `delete_session` | 删一个 session（级联删所有 key） |
 | `purge_expired_sessions` | GC 过期的 session（按 last_access + TTL） |
+| `configure_rate_limit` | 配令牌桶：global_rpm / global_tpm / per_session_rpm / per_session_tpm |
+| `reset_rate_limit` | 限流重置为 unlimited |
+| `get_rate_limit_status` | 限流配置 + 桶状态（JSON） |
+| `get_usage_stats` | 汇总 token 用量 + 成本（按 model / session 分组） |
+| `list_usage_records` | 列最近 N 条 usage 记录（时间倒序） |
+| `reset_usage_stats` | 清空 usage 记录（保留价格表） |
+| `configure_pricing_override` | 覆盖/新增模型的 prompt/completion 单价 |
 | `list_agent_tools` | 列出当前已注册给 agent 调用的工具 + OpenAI specs JSON |
 | `unregister_agent_tool` | 取消注册某个 agent 工具 |
 | `obsidian_list_notes` | 列出 Obsidian vault 里的所有 .md 笔记 |
@@ -566,6 +573,7 @@ loop (max 6 steps):
 
 > `orchestrator_run` / `parallel_agents_run` / `map_reduce_run` / `swarm_run` 都接 `tools: list[str] | None` 参数（默认 `None` = 用全部已注册工具，`[]` = 关闭 function-calling）。
 > 这 4 个工作流都接 `session_id: str = ""` 参数（默认 `""` = 创建新 session，传值 = 绑定到已有 session，跨请求持久化）。
+> 这 4 个工作流**不**会绕过限流 — 任何 LLM 调用都会先 acquire 令牌桶再发 HTTP 请求。超限返回 `ERROR: RateLimitError: ...`。
 > `swarm_run` 还接 `agents_json: str` 参数（默认 `""` = 用模块级 registry，JSON 数组 = 一次性覆盖本次调用的 agent 集）。
 > 所有 `obsidian_*` tool 都接 `vault_path: str` 参数（vault 根目录的绝对路径），同一个 server 可以在一个 session 内服务多个 vault。
 
@@ -734,8 +742,8 @@ mcp dev src/fulladdmax_mcp/server.py
 - [x] Obsidian vault 双向读写集成（v0.3.0）
 - [x] 自定义 Swarm agent profile 注册 API（v0.3.0）
 - [x] 持久化 context（SQLite + Memory，v0.4.0）
-- [ ] Token 用量统计 & 成本控制
-- [ ] 限流令牌桶（避免打爆 LLM 限流）
+- [x] Token 用量统计 & 成本控制（v0.5.0）
+- [x] 限流令牌桶（global + per-session，v0.5.0）
 
 ---
 
@@ -1067,6 +1075,147 @@ print(store.snapshot(sid))
 | `""` 但 bind() 已经在外部调用 | 用外部 bind 的 session |
 
 `bind()` 是 idempotent — 给个不存在的 id 它会创建，给个已有的就接上。这让客户端不用先调 `create_session` 之类的预热接口。
+
+---
+
+## 💰 Token 用量与限流 / Usage Tracking & Rate Limiting
+
+**Token 用量**和**限流令牌桶**是 Roadmap 的最后两项，做完即 v0.5.0。它们都**全自动** — 任何 LLM 调用都会先 acquire 令牌桶，发出去成功后记一条 usage 记录。客户端也能通过 7 个新 MCP tool 主动查询 / 配置。
+
+### 7 个新 MCP Tool
+
+| Tool | 行为 |
+|------|------|
+| `configure_rate_limit(global_rpm, global_tpm, per_session_rpm, per_session_tpm, est)` | 配 4 个令牌桶上限。0 = 无限。`est` = 客户端没传 max_tokens 时的默认预估 |
+| `reset_rate_limit()` | 限流重置为 unlimited |
+| `get_rate_limit_status()` | 当前配置 + 桶状态（剩余 token） |
+| `get_usage_stats(session_id, model, since_ts)` | 汇总 token + 成本，按 model / session 分组 |
+| `list_usage_records(session_id, model, since_ts, limit)` | 列最近 N 条记录（时间倒序） |
+| `reset_usage_stats()` | 清空所有 usage 记录（保留价格表） |
+| `configure_pricing_override(model, prompt_per_million, completion_per_million)` | 覆盖/新增模型单价 |
+
+### 两级令牌桶
+
+| 桶 | 作用 |
+|----|------|
+| **global** (rpm + tpm) | 整个 server 共享 — 保护上游 provider |
+| **per-session** (rpm + tpm) | 每个 session_id 独立 — 防止单个 session 抢占全局预算 |
+
+桶行为：
+- **容量 = max(1, 上限/10)** — 允许短时突发
+- **refill = 上限/60** (tokens/sec) — 稳态速率
+- **超限立刻 raise `RateLimitError`**（server 端返回 `ERROR: ...`）— **不**排队等待
+- **HTTP 请求没发出去** — 限流失败在 _request() 入口拦截
+
+### 内置价格表
+
+| Model | Prompt / 1M | Completion / 1M |
+|-------|-------------|-----------------|
+| gpt-4o | $2.50 | $10.00 |
+| gpt-4o-mini | $0.15 | $0.60 |
+| gpt-4-turbo | $10.00 | $30.00 |
+| gpt-3.5-turbo | $0.50 | $1.50 |
+| o1 | $15.00 | $60.00 |
+| o1-mini | $3.00 | $12.00 |
+
+支持日期后缀（`gpt-4o-2024-05-13` 自动归到 `gpt-4o`）。未知模型 cost 记 0，**不会**阻塞调用。
+
+### 客户端使用
+
+**1. 配限流：**
+
+> "调 `configure_rate_limit(global_rpm=60, global_tpm=120000, per_session_rpm=10, per_session_tpm=20000)`"
+
+→ `"Configured rate limit: global 60r/120000t per-min, per-session 10r/20000t per-min (est=1024)"`
+
+或者用紧凑字符串（CLI / script 友好）：
+
+```python
+from fulladdmax_mcp import rate_limit
+rate_limit.configure_from_string("global=60r/120k|session=10r/20k|est=2048")
+```
+
+**2. 跑工作流触发限流：**
+
+> "用 `orchestrator_run(task='翻译 100 篇文档')`，session_id='translation'"
+
+如果 1 秒内已发 6 个 LLM 请求，**第 7 个会返回** `ERROR: RateLimitError: global RPM limit 60 reached (retry after 0.5s, scope=global_rpm)`。
+
+**3. 查用量：**
+
+> "调 `get_usage_stats(session_id='translation', since_ts=今天0点时间戳)`"
+
+```json
+{
+  "records": 47,
+  "prompt_tokens": 125430,
+  "completion_tokens": 38021,
+  "total_tokens": 163451,
+  "cost_usd": 0.342118,
+  "by_model": {
+    "gpt-4o-mini": {"records": 47, "prompt_tokens": 125430, ..., "cost_usd": 0.342118}
+  },
+  "by_session": {
+    "translation": {"records": 47, ...}
+  }
+}
+```
+
+**4. 查限流状态：**
+
+> "调 `get_rate_limit_status()`"
+
+返回当前 4 个桶的 capacity / refill_per_second / available token count。
+
+**5. 改价格（企业合同 / 本地模型）：**
+
+> "调 `configure_pricing_override(model='my-llama-3', prompt_per_million=0.10, completion_per_million=0.10)`"
+
+→ `"Pricing for 'my-llama-3': $0.1/1M prompt, $0.1/1M completion"`
+
+**6. 周期重置：**
+
+> "调 `reset_usage_stats()` 清掉旧记录"
+
+### Python 脚本用法
+
+```python
+import asyncio
+from fulladdmax_mcp import rate_limit, usage
+from fulladdmax_mcp import orchestrator
+
+# 配限流
+rate_limit.configure(global_rpm=120, global_tpm=200_000, per_session_rpm=30)
+
+# 跑工作流（自动 acquire 桶 + 自动记 usage）
+out = asyncio.run(orchestrator.run("分析 Q4", num_workers=2))
+
+# 直接查 store
+summary = usage.store().summary()
+print(f"total: {summary.total_tokens} tokens, ${summary.cost_usd:.4f}")
+
+# 按 model 看
+for model, s in summary.by_model.items():
+    print(f"  {model}: {s.records} calls, ${s.cost_usd:.4f}")
+```
+
+### 重要保证
+
+- **限流在 HTTP 调用前拦截** — 超限的请求**绝不**发到 LLM provider（节省钱 + 避免触限）
+- **usage 记录失败不影响 LLM 响应** — `_record_usage` 内部 try/except 兜底
+- **没 `usage` block 的响应也能工作** — 本地 LLM server (Ollama, vLLM) 不返回 usage block 时不 crash
+- **价格表覆盖不会重新计历史** — 已存的 UsageRecord 保持原 cost
+- **限流 per-session 独立** — alice 满了，bob 还能跑
+- **TTL GC** — `evict_idle_sessions()` 自动清理 1 小时没动的 per-session 桶
+
+### 失败模式
+
+| 错误 | 表现 |
+|------|------|
+| `RateLimitError` (scope=global_rpm) | 第 1 秒内发超过 burst 个请求 |
+| `RateLimitError` (scope=global_tpm) | 累计 token 数超过 burst |
+| `RateLimitError` (scope=per_session_*) | 某个 session 单独超限 |
+| `get_usage_stats` 返回 0 records | usage store 是 memory 默认值 + 重启过（memory 不持久化）。要持久化用 `configure_store`（见持久化 Context 段） |
 
 ---
 
