@@ -546,12 +546,18 @@ loop (max 6 steps):
 | `configure_llm` | 配置 OpenAI 兼容的 base_url / api_key / model |
 | `list_agent_tools` | 列出当前已注册给 agent 调用的工具 + OpenAI specs JSON |
 | `unregister_agent_tool` | 取消注册某个 agent 工具 |
+| `obsidian_list_notes` | 列出 Obsidian vault 里的所有 .md 笔记 |
+| `obsidian_read_note` | 读一个 .md 笔记，返回 frontmatter + body |
+| `obsidian_search_notes` | 关键字搜索笔记（case-insensitive 默认） |
+| `obsidian_write_note` | 创建/覆盖一个 .md 笔记（带 frontmatter） |
+| `obsidian_append_note` | 追加内容到 .md 笔记（保留 frontmatter） |
 | `orchestrator_run` | Orchestrator-Workers：planner 拆任务 → N 个 worker 并行 → synthesizer 汇总 |
 | `parallel_agents_run` | 并行子代理：最多 10 个并发，每个失败单独记录不中断整体 |
 | `map_reduce_run` | Map-Reduce：map 阶段并行分片，reduce 阶段合并 |
 | `swarm_run` | Swarm：内置 researcher / coder / critic / writer 4 个 agent，强制 JSON 交接 |
 
 > `orchestrator_run` / `parallel_agents_run` / `map_reduce_run` / `swarm_run` 都接 `tools: list[str] | None` 参数（默认 `None` = 用全部已注册工具，`[]` = 关闭 function-calling）。
+> 所有 `obsidian_*` tool 都接 `vault_path: str` 参数（vault 根目录的绝对路径），同一个 server 可以在一个 session 内服务多个 vault。
 
 ### `orchestrator_run(task, num_workers=3, timeout=300)`
 
@@ -715,10 +721,123 @@ mcp dev src/fulladdmax_mcp/server.py
 
 - [x] HTTP / Streamable-HTTP transport（v0.2.0）
 - [x] Function calling / agent-callable tools（v0.3.0）
+- [x] Obsidian vault 双向读写集成（v0.3.0）
 - [ ] 自定义 Swarm agent profile 注册 API
 - [ ] 持久化 context（Redis / SQLite 后端）
 - [ ] Token 用量统计 & 成本控制
 - [ ] 限流令牌桶（避免打爆 LLM 限流）
+
+---
+
+## 🗒️ Obsidian 集成 / Vault Integration
+
+5 个 `obsidian_*` tool 提供对 [Obsidian](https://obsidian.md/) vault 的双向读写。`vault_path` 是 vault 根目录的绝对路径，作为每个 tool 的参数传入 — 同一个 server 可以在一个 session 内服务多个 vault。
+
+| Tool | 行为 |
+|------|------|
+| `obsidian_list_notes(vault_path, folder="", limit=500)` | 列出 vault（或子目录）下所有 `.md` 笔记 |
+| `obsidian_read_note(vault_path, path)` | 读一个笔记，返回 frontmatter + body |
+| `obsidian_search_notes(vault_path, keyword, folder="", case_sensitive=False, limit=50)` | 关键字搜索（默认 case-insensitive），返回 path + snippet |
+| `obsidian_write_note(vault_path, path, body, frontmatter_json="", overwrite=False)` | 创建/覆盖笔记（frontmatter 通过 JSON 字符串传） |
+| `obsidian_append_note(vault_path, path, content)` | 追加内容（保留 frontmatter） |
+
+### Frontmatter 支持
+
+手写的 YAML 解析器（**零依赖**），支持 Obsidian 里常见的所有 frontmatter 用法：
+
+- 标量（字符串 / 数字 / 布尔 / null）
+- 块列表 `- a / - b` 和流列表 `[a, b, "c d"]`
+- 嵌套映射（2 空格缩进）
+- 块标量 `|`（多行字符串）
+- 单/双引号字符串
+- 注释（`#` 整行和行内）
+- Unicode（中文等）
+
+不支持的部分：复杂的 YAML 1.2 特性（多重引用、自定义 tag）— 这些 frontmatter 解析会报 `VaultError`。
+
+### 路径安全
+
+- 绝对路径（`/etc/passwd`、`C:\Windows`）— 拒绝
+- 路径穿越（`../foo`、`foo/../../bar`）— 拒绝
+- 文件大小限制 5 MB
+
+### 用法示例
+
+**MCP 客户端调用（Cursor / Claude Desktop / Trae）：**
+
+> "用 fulladdmax 的 `obsidian_search_notes` 找 `D:\MyVault` 里所有提到 'FullADDMAX' 的笔记"
+
+> "用 `obsidian_read_note` 读 `D:\MyVault\Projects\roadmap.md` 完整内容"
+
+> "把今天的工作日志追加到 `D:\MyVault\Daily\2026-06-26.md`"
+
+**Agent 自动使用（function calling）：**
+
+`obsidian_*` tool 同时也注册到了 agent 工具注册表，所以 worker 在 `orchestrator_run(tools=["obsidian_search_notes", "obsidian_read_note"])` 中可以**自动**调用它们来检索笔记，然后基于笔记内容生成答案。
+
+例如：让 worker 写一份竞品分析报告，框架会让 worker：
+1. `obsidian_search_notes("竞品 X")` 找出相关笔记
+2. `obsidian_read_note(...)` 读每篇笔记
+3. 把内容整合到最终答案里
+
+### 完整示例
+
+```python
+from fulladdmax_mcp.obsidian import (
+    list_notes_tool, read_note_tool, search_notes_tool,
+    append_note_tool, write_note_tool,
+)
+
+vault = "D:/MyVault"
+
+# 列出所有笔记
+print(list_notes_tool(vault))
+
+# 搜索
+print(search_notes_tool(vault, "FullADDMAX"))
+
+# 读
+print(read_note_tool(vault, "Projects/roadmap.md"))
+
+# 写（带 frontmatter）
+print(write_note_tool(
+    vault, "Daily/2026-06-26.md",
+    body="今天开始 obsidian 集成",
+    frontmatter_json='{"tags": ["work"], "status": "draft"}',
+))
+
+# 追加
+print(append_note_tool(
+    vault, "Daily/2026-06-26.md",
+    "## 增量笔记\n- 跑通了 list / read / search / write / append 5 个 tool",
+))
+```
+
+输出示例：
+
+```
+Found 12 note(s):
+- Daily/2026-06-25.md
+- Daily/2026-06-26.md
+- Projects/roadmap.md
+- ...
+
+Found 3 match(es) for 'FullADDMAX':
+- **Projects/roadmap.md** — …# 项目路线图  ## 进行中 - FullADDMAX 集成 …
+- **Daily/2026-06-25.md** — …## 笔记  - FullADDMAX v0.3.0 已发布 …
+
+# Projects/roadmap.md
+
+## Frontmatter
+​```yaml
+status: active
+tags: [mcp, agent]
+​```
+
+## Body
+# 项目路线图
+...
+```
 
 ---
 
