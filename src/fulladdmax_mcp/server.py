@@ -26,6 +26,7 @@ from typing import Literal
 from mcp.server.fastmcp import Context, FastMCP
 
 from . import __version__
+from . import context as ctx_mod
 from . import mapreduce, obsidian, orchestrator, parallel, swarm
 from .errors import FullADDMAXError
 from .llm import LLMConfig, get_config, set_config
@@ -274,6 +275,128 @@ register_tool(obsidian.append_note_tool, name="obsidian_append_note")
 
 
 # ---------------------------------------------------------------------------
+# Persistent context store
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def configure_context_store(
+    backend: str = "memory",
+    sqlite_path: str = "",
+    ttl_seconds: float = 7 * 24 * 3600,
+) -> str:
+    """Switch the persistent context store.
+
+    Args:
+        backend: ``"memory"`` (default, in-process, lost on restart) or
+            ``"sqlite"`` (single-file, survives restarts).
+        sqlite_path: Required when ``backend="sqlite"``; path to the
+            database file (created on first use).
+        ttl_seconds: Session lifetime in seconds. Sessions whose
+            ``last_access`` is older than this are purged on the next
+            call to :func:`purge_expired_sessions`. Default 7 days.
+    """
+    try:
+        if backend == "memory":
+            store = ctx_mod.use_memory_store(ttl_seconds=ttl_seconds)
+            return f"Configured MemoryContextStore (ttl={ttl_seconds}s)"
+        if backend == "sqlite":
+            if not sqlite_path:
+                return "ERROR: sqlite_path is required when backend='sqlite'"
+            store = ctx_mod.use_sqlite_store(sqlite_path, ttl_seconds=ttl_seconds)
+            return f"Configured SqliteContextStore at {sqlite_path} (ttl={ttl_seconds}s)"
+        return f"ERROR: unknown backend {backend!r} (use 'memory' or 'sqlite')"
+    except Exception as e:  # noqa: BLE001
+        return f"ERROR: {type(e).__name__}: {e}"
+
+
+@mcp.tool()
+def list_sessions() -> str:
+    """List every session currently in the store.
+
+    Returns a Markdown report with id, age (seconds), and number of
+    keys, plus a JSON block. The first row is the most recently
+    accessed.
+    """
+    info = ctx_mod.store().list_sessions()
+    if not info:
+        return "No sessions in store."
+    import json as _json
+    import time as _time
+
+    now = _time.time()
+    lines = [f"Sessions ({len(info)}):", ""]
+    lines.append("| session_id | keys | last_access | age |")
+    lines.append("|------------|------|-------------|-----|")
+    for s in info:
+        age = int(now - s.last_access)
+        lines.append(f"| `{s.session_id}` | {s.size} | {int(s.last_access)} | {age}s |")
+    lines.append("")
+    lines.append("```json")
+    lines.append(
+        _json.dumps(
+            [
+                {
+                    "session_id": s.session_id,
+                    "size": s.size,
+                    "created_at": s.created_at,
+                    "last_access": s.last_access,
+                }
+                for s in info
+            ],
+            indent=2,
+        )
+    )
+    lines.append("```")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def get_session(session_id: str) -> str:
+    """Return the full payload of a session as JSON.
+
+    Use this to inspect what a previous workflow run wrote to the
+    store. ``session_id`` is the 12-char hex id returned by the
+    workflow tool.
+    """
+    try:
+        snap = ctx_mod.store().snapshot(session_id)
+    except Exception as e:  # noqa: BLE001
+        return f"ERROR: {type(e).__name__}: {e}"
+    import json as _json
+
+    return _json.dumps(snap, ensure_ascii=False, indent=2, default=str)
+
+
+@mcp.tool()
+def delete_session(session_id: str) -> str:
+    """Delete a session and all of its keys.
+
+    No-op (returns ``"skipped"``) if the session does not exist.
+    """
+    if ctx_mod.store().delete(session_id):
+        return f"deleted: {session_id}"
+    return f"skipped: {session_id!r} not in store"
+
+
+@mcp.tool()
+def purge_expired_sessions(ttl_seconds: float = 0) -> str:
+    """Remove all sessions whose ``last_access`` is older than
+    ``ttl_seconds`` (default: use the store's configured TTL).
+
+    Returns ``"purged: N"`` where N is the number removed.
+    """
+    try:
+        if ttl_seconds <= 0:
+            count = ctx_mod.store().purge_expired()
+        else:
+            count = ctx_mod.store().purge_expired(ttl_seconds=ttl_seconds)
+    except Exception as e:  # noqa: BLE001
+        return f"ERROR: {type(e).__name__}: {e}"
+    return f"purged: {count} session(s)"
+
+
+# ---------------------------------------------------------------------------
 # Dynamic Swarm agent registry
 # ---------------------------------------------------------------------------
 
@@ -372,6 +495,7 @@ async def orchestrator_run(
     num_workers: int = 3,
     timeout: float = 300.0,
     tools: list[str] | None = None,
+    session_id: str = "",
     ctx: Context | None = None,
 ) -> str:
     """Orchestrator-Workers: a planner agent decomposes ``task`` into
@@ -385,9 +509,20 @@ async def orchestrator_run(
         tools: Optional whitelist of agent tool names the workers may
             call. ``None`` (default) = every registered tool. ``[]`` =
             disable tool-calling entirely. See ``list_agent_tools``.
+        session_id: Optional session id to bind before running. If
+            provided, the workflow reads / writes to that session in
+            the persistent context store. If empty, a fresh
+            short-lived session is created (same as before).
     """
+    if session_id:
+        try:
+            ctx_mod.bind(session_id)
+        except Exception as e:  # noqa: BLE001
+            return f"ERROR: invalid session_id {session_id!r}: {e}"
     if ctx is not None:
-        await ctx.info(f"orchestrator_run start: workers={num_workers}")
+        await ctx.info(
+            f"orchestrator_run start: workers={num_workers} session_id={ctx_mod.session_id()}"
+        )
     try:
         return await orchestrator.run(
             task, num_workers=num_workers, timeout=timeout, tools=tools
@@ -402,6 +537,7 @@ async def parallel_agents_run(
     max_concurrent: int = 10,
     timeout: float = 300.0,
     tools: list[str] | None = None,
+    session_id: str = "",
 ) -> str:
     """Run multiple independent tasks in parallel (max 10 concurrent).
 
@@ -415,7 +551,14 @@ async def parallel_agents_run(
         tools: Optional whitelist of tool names each task may call.
             ``None`` (default) = every registered tool. ``[]`` = no
             tool-calling. See ``list_agent_tools``.
+        session_id: Optional session id to bind before running. See
+            :func:`orchestrator_run` for details.
     """
+    if session_id:
+        try:
+            ctx_mod.bind(session_id)
+        except Exception as e:  # noqa: BLE001
+            return f"ERROR: invalid session_id {session_id!r}: {e}"
     try:
         return await parallel.run(
             tasks, max_concurrent=max_concurrent, timeout=timeout, tools=tools
@@ -432,6 +575,7 @@ async def map_reduce_run(
     max_concurrent: int = 10,
     timeout: float = 600.0,
     tools: list[str] | None = None,
+    session_id: str = "",
 ) -> str:
     """Map-Reduce: process ``items`` in parallel (map), then merge (reduce).
 
@@ -449,7 +593,14 @@ async def map_reduce_run(
         tools: Optional whitelist of tool names the map / reduce phases
             may call. ``None`` (default) = every registered tool. ``[]``
             = no tool-calling.
+        session_id: Optional session id to bind before running. See
+            :func:`orchestrator_run` for details.
     """
+    if session_id:
+        try:
+            ctx_mod.bind(session_id)
+        except Exception as e:  # noqa: BLE001
+            return f"ERROR: invalid session_id {session_id!r}: {e}"
     try:
         return await mapreduce.run(
             items,
@@ -471,6 +622,7 @@ async def swarm_run(
     timeout: float = 300.0,
     tools: list[str] | None = None,
     agents_json: str = "",
+    session_id: str = "",
 ) -> str:
     """Swarm multi-agent collaboration with lightweight handoffs.
 
@@ -499,7 +651,14 @@ async def swarm_run(
             If provided, the call's agent set is built from
             ``agents_json`` (overrides the module-level registry for
             this call). If empty, the module-level registry is used.
+        session_id: Optional session id to bind before running. See
+            :func:`orchestrator_run` for details.
     """
+    if session_id:
+        try:
+            ctx_mod.bind(session_id)
+        except Exception as e:  # noqa: BLE001
+            return f"ERROR: invalid session_id {session_id!r}: {e}"
     agents: dict[str, swarm.Agent] | None = None
     if agents_json.strip():
         try:
