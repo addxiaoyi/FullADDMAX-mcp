@@ -132,6 +132,96 @@ uv pip install -e ".[dev]"
 
 ---
 
+## 🌐 传输协议 / Transports
+
+FullADDMAX-mcp 通过 CLI 切换 transport。
+
+### stdio（默认）— Claude Desktop / Cursor / Trae
+
+```bash
+fulladdmax-mcp                       # 等价于 --transport stdio
+```
+
+stdio 模式直接被 MCP 客户端作为子进程拉起，通过 stdin/stdout 走 JSON-RPC。配置 `mcpServers` 时 `command` 填 `fulladdmax-mcp`，`env` 写 LLM 凭据（见下）。
+
+### Streamable-HTTP（推荐给 HTTP 客户端 / 远程部署 / 多客户端共享）
+
+`streamable-http` 是 MCP 1.x 推荐的生产级 HTTP transport（POST 请求携带 JSON-RPC，GET 用于 SSE 流式响应）。
+
+```bash
+# 启动 HTTP server（默认 127.0.0.1:8000，mount path /mcp）
+fulladdmax-mcp --transport streamable-http
+
+# 自定义 host/port
+fulladdmax-mcp --transport http --host 0.0.0.0 --port 9000
+
+# 自定义 mount path
+fulladdmax-mcp --transport streamable-http --mount-path /fulladdmax
+```
+
+服务起来后，HTTP 客户端连接：
+
+```
+http://127.0.0.1:8000/mcp
+```
+
+也支持 `python -m fulladdmax_mcp --transport streamable-http` 用同一套参数。
+
+#### 用 `curl` 自测
+
+```bash
+# 1) 初始化 session
+curl -X POST http://127.0.0.1:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
+
+# 2) 调用 ping tool（带上一步返回的 Mcp-Session-Id）
+curl -X POST http://127.0.0.1:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: <session-id>" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ping","arguments":{}}}'
+```
+
+#### Claude Desktop 通过 HTTP 接入
+
+```json
+{
+  "mcpServers": {
+    "fulladdmax-http": {
+      "url": "http://127.0.0.1:8000/mcp"
+    }
+  }
+}
+```
+
+> 注意：HTTP 模式下 LLM 凭据不能再通过 `env` 字段注入（该 server 进程不读 env），请改用 `configure_llm` tool 在运行时配置。
+
+### SSE（旧客户端兼容）
+
+```bash
+fulladdmax-mcp --transport sse --port 8000
+```
+
+SSE 保留给旧版 MCP 客户端。新部署请用 `streamable-http`。
+
+### Transport 对照 / Transport comparison
+
+| Transport | 用途 | 配置字段 |
+|-----------|------|---------|
+| `stdio`（默认） | 本地 MCP 客户端（Claude Desktop / Cursor / Trae） | `command` + `env` |
+| `streamable-http` | 远程 / 多客户端共享 / 反向代理 | `url` |
+| `sse` | 旧客户端兼容 | `url` |
+
+### 安全提示 / Security notes
+
+- 默认只绑定 `127.0.0.1`，只接受本机连接；FastMCP 内置 DNS-rebinding 保护。
+- 暴露到公网时务必加反向代理（nginx / Caddy）+ TLS，并在前面挂认证层。
+- HTTP 模式下 server 进程内不读 `FULLADDMAX_API_KEY` env（凭据通过 `configure_llm` 配置），但请求日志可能暴露任务文本，注意日志脱敏。
+
+---
+
 ## 🚀 快速开始 / Quickstart
 
 启动 MCP server：
@@ -178,7 +268,7 @@ mcp dev src/fulladdmax_mcp/server.py
 
 ## 🗺️ 路线图 / Roadmap
 
-- [ ] HTTP / Streamable-HTTP transport
+- [x] HTTP / Streamable-HTTP transport（v0.2.0）
 - [ ] 自定义 Swarm agent profile 注册 API
 - [ ] 工具调用 (function calling) 支持，让 worker 真正能用 MCP 工具
 - [ ] 持久化 context（Redis / SQLite 后端）
