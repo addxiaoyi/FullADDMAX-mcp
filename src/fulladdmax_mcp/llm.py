@@ -19,7 +19,10 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
+from . import context as ctx_mod
 from .errors import LLMError, LLMTimeoutError
+from .rate_limit import get_limiter
+from .usage import UsageRecord, store as usage_store
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +125,19 @@ class LLMClient:
             payload["tool_choice"] = overrides.pop("tool_choice", self.config.tool_choice)
         payload.update(overrides)
 
+        # Rate limit: reserve a slot + estimated tokens. Raises
+        # RateLimitError before the HTTP call goes out, so an over-limit
+        # client never even hits the upstream provider.
+        try:
+            get_limiter().acquire(
+                session_id=ctx_mod.session_id(),
+                estimated_tokens=int(payload.get("max_tokens") or 0),
+            )
+        except Exception:
+            # Make sure we re-raise RateLimitError untouched; anything
+            # else from the limiter is unexpected and also propagated.
+            raise
+
         client = await self._get_client()
         last_exc: Exception | None = None
 
@@ -145,6 +161,9 @@ class LLMClient:
                         raise LLMError(
                             f"LLM returned malformed payload: message is {type(message).__name__}"
                         )
+                    # Record token usage. Failures here MUST NOT affect
+                    # the call result — the LLM already gave us an answer.
+                    self._record_usage(data, model=payload["model"])
                     return message
                 # 4xx -> permanent; 5xx -> retriable
                 body_preview = resp.text[:300]
@@ -166,6 +185,30 @@ class LLMClient:
 
         assert last_exc is not None
         raise last_exc
+
+    def _record_usage(self, response_data: dict[str, Any], *, model: str) -> None:
+        """Persist token usage from an OpenAI ``usage`` block.
+
+        Silently no-ops on missing / malformed ``usage`` (some local
+        LLM servers omit it) and on any store error (we never want
+        bookkeeping to fail the LLM call).
+        """
+        usage = response_data.get("usage")
+        if not isinstance(usage, dict):
+            return
+        try:
+            prompt = int(usage.get("prompt_tokens", 0))
+            completion = int(usage.get("completion_tokens", 0))
+            if prompt + completion == 0:
+                return
+            usage_store().record_call(
+                model=model,
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                session_id=ctx_mod.session_id(),
+            )
+        except Exception as e:  # noqa: BLE001
+            log.debug("usage record failed (ignored): %s", e)
 
     async def chat(self, messages: list[dict[str, str]], **overrides: Any) -> str:
         """Send a chat completion request and return the assistant text.
