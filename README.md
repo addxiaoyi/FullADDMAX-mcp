@@ -445,16 +445,113 @@ retries   : 2
 
 ---
 
+## 🧰 自定义工具 / Function Calling
+
+`fulladdmax-mcp` 的 agent 可以在工作流中途调用**你注册的 Python 工具**。LLM 通过 OpenAI 兼容的 `tools`/`tool_calls` 协议发起调用，框架负责调度、错误捕获、终止。
+
+### 1. 注册一个工具
+
+```python
+# your_app.py  —  在 fulladdmax-mcp 启动前执行
+import fulladdmax_mcp.tools as ft
+
+@ft.register_tool
+async def get_weather(city: str) -> str:
+    """Look up current weather for a city."""
+    return f"Weather in {city}: 72°F, sunny"
+
+@ft.register_tool
+async def search_docs(query: str, top_k: int = 5) -> str:
+    """Search the local documentation index."""
+    return f"<{top_k} results for '{query}'>"
+```
+
+或者用 `register_tool(fn, name=..., description=..., parameters=...)` 显式提供 OpenAI 格式的 JSON Schema。
+
+### 2. 把工具暴露给 agent
+
+每个工作流 tool 都接 `tools: list[str] | None` 参数：
+
+| 值 | 含义 |
+|----|------|
+| `None`（默认）| 所有已注册工具（自动排除 orchestrator 自身） |
+| `["get_weather"]` | 仅白名单里的工具 |
+| `[]` | 关闭 function-calling（保持纯对话模式） |
+
+> MCP 调用时这个参数名是 `tools`，类型是 `string[]`（每个元素是工具名）。
+
+### 3. 在 MCP 客户端调用
+
+让模型（Cursor / Claude Desktop / Trae）：
+
+> "用 fulladdmax 的 `orchestrator_run` 写一个旅游规划，要求 `tools=["get_weather"]`"
+
+模型会：
+1. 调用 `orchestrator_run(task="...", tools=["get_weather"])` 
+2. Planner 拆 3 个子任务
+3. 每个 worker 看到 tool 列表后可以调 `get_weather(city=...)` 拿真实数据
+4. Synthesizer 汇总成最终答案
+
+### 4. 自递归保护
+
+为了防止 LLM 在 worker 里调到 `orchestrator_run` 再次进入工作流（造成无限递归），框架默认排除这 6 个工具名：
+
+```
+ping, configure_llm, orchestrator_run, parallel_agents_run,
+map_reduce_run, swarm_run
+```
+
+这个白名单在 `fulladdmax_mcp.tools.DEFAULT_EXCLUDE` 里。
+
+### 5. 在 MCP 客户端里查看当前可用工具
+
+调用 `list_agent_tools`：
+
+```
+- get_weather — Look up current weather for a city.
+- search_docs — Search the local documentation index.
+
+OpenAI specs (excluded: ...):
+```json
+[
+  {"type": "function", "function": {"name": "get_weather", "description": "...", "parameters": {...}}},
+  ...
+]
+```
+```
+
+### 6. 协议细节
+
+`LLMClient.chat_with_tools` 的执行流程：
+
+```
+loop (max 6 steps):
+  1. POST /v1/chat/completions with messages + tools + tool_choice=auto
+  2. 如果 response.message.tool_calls 非空：
+     a. 把 assistant message（带 tool_calls）追加到对话
+     b. 逐个调 executor(call)
+     c. 把结果作为 role=tool 消息追加到对话
+  3. 如果 response.message 没有 tool_calls（或达到 max_steps）→ 退出
+```
+
+错误处理：executor 抛任何异常都会被捕获并以 `"ERROR: ExceptionName: msg"` 形式反馈给 LLM（不打断整个工作流）。
+
+---
+
 ## 🛠️ 工具列表 / Tool Reference
 
 | Tool | 用途 |
 |------|------|
 | `ping` | 健康检查，返回版本和当前 LLM 配置（key 脱敏） |
 | `configure_llm` | 配置 OpenAI 兼容的 base_url / api_key / model |
+| `list_agent_tools` | 列出当前已注册给 agent 调用的工具 + OpenAI specs JSON |
+| `unregister_agent_tool` | 取消注册某个 agent 工具 |
 | `orchestrator_run` | Orchestrator-Workers：planner 拆任务 → N 个 worker 并行 → synthesizer 汇总 |
 | `parallel_agents_run` | 并行子代理：最多 10 个并发，每个失败单独记录不中断整体 |
 | `map_reduce_run` | Map-Reduce：map 阶段并行分片，reduce 阶段合并 |
 | `swarm_run` | Swarm：内置 researcher / coder / critic / writer 4 个 agent，强制 JSON 交接 |
+
+> `orchestrator_run` / `parallel_agents_run` / `map_reduce_run` / `swarm_run` 都接 `tools: list[str] | None` 参数（默认 `None` = 用全部已注册工具，`[]` = 关闭 function-calling）。
 
 ### `orchestrator_run(task, num_workers=3, timeout=300)`
 
@@ -617,8 +714,8 @@ mcp dev src/fulladdmax_mcp/server.py
 ## 🗺️ 路线图 / Roadmap
 
 - [x] HTTP / Streamable-HTTP transport（v0.2.0）
+- [x] Function calling / agent-callable tools（v0.3.0）
 - [ ] 自定义 Swarm agent profile 注册 API
-- [ ] 工具调用 (function calling) 支持，让 worker 真正能用 MCP 工具
 - [ ] 持久化 context（Redis / SQLite 后端）
 - [ ] Token 用量统计 & 成本控制
 - [ ] 限流令牌桶（避免打爆 LLM 限流）
