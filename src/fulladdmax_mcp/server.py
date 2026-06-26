@@ -274,6 +274,94 @@ register_tool(obsidian.append_note_tool, name="obsidian_append_note")
 
 
 # ---------------------------------------------------------------------------
+# Dynamic Swarm agent registry
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def register_swarm_agent(
+    name: str,
+    system: str,
+    description: str = "",
+    overwrite: bool = False,
+) -> str:
+    """Register a custom Swarm agent profile.
+
+    The four built-in profiles (``researcher`` / ``coder`` / ``critic`` /
+    ``writer``) are pre-seeded. This tool lets you add new ones (e.g.
+    a ``legal-reviewer``) or override built-ins (pass ``overwrite=True``).
+
+    Once registered, the agent is available in every subsequent
+    :func:`swarm_run` call by name. Use :func:`unregister_swarm_agent`
+    to remove it.
+
+    Args:
+        name: Short identifier used in the LLM's ``{"next": <name>}``
+            handoff envelope.
+        system: System prompt for the agent. Must include the
+            ``"Always reply with JSON {next, message}"`` instruction.
+        description: One-line description shown to the LLM in the
+            agent roster.
+        overwrite: If False (default), the call fails when ``name``
+            already exists. Pass True to replace.
+    """
+    try:
+        swarm.register_swarm_agent(
+            name=name, system=system, description=description, overwrite=overwrite
+        )
+    except FullADDMAXError as e:
+        return f"ERROR: {type(e).__name__}: {e}"
+    action = "updated" if overwrite and name in swarm.registry else "registered"
+    return f"{action}: {name} (total: {len(swarm.registry)} agent(s))"
+
+
+@mcp.tool()
+def unregister_swarm_agent(name: str) -> str:
+    """Remove a Swarm agent profile from the module-level registry.
+
+    No-op (returns ``"skipped"``) if the name is not registered.
+    Built-in profiles can be removed too; they will not reappear
+    unless the process is restarted.
+    """
+    if swarm.unregister_swarm_agent(name):
+        return f"unregistered: {name} (remaining: {len(swarm.registry)} agent(s))"
+    return f"skipped: {name!r} is not registered"
+
+
+@mcp.tool()
+def list_swarm_agents() -> str:
+    """List every Swarm agent currently registered, with a JSON
+    block of the same data for machine-readable access.
+
+    The output is a Markdown report. The first four entries are the
+    built-in profiles; anything after that was added via
+    :func:`register_swarm_agent`.
+    """
+    agents = swarm.list_swarm_agents()
+    if not agents:
+        return "No swarm agents registered. Call register_swarm_agent to add one."
+    import json as _json
+
+    lines = [f"Registered swarm agents ({len(agents)}):", ""]
+    for a in agents:
+        lines.append(f"- **{a.name}** — {a.description or '(no description)'}")
+    lines.append("")
+    lines.append("```json")
+    lines.append(
+        _json.dumps(
+            [
+                {"name": a.name, "system": a.system, "description": a.description}
+                for a in agents
+            ],
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+    lines.append("```")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Workflows
 # ---------------------------------------------------------------------------
 
@@ -382,14 +470,16 @@ async def swarm_run(
     max_handoffs: int = 8,
     timeout: float = 300.0,
     tools: list[str] | None = None,
+    agents_json: str = "",
 ) -> str:
     """Swarm multi-agent collaboration with lightweight handoffs.
 
     Starts at ``initial_agent`` (one of ``researcher`` / ``coder`` / ``critic``
-    / ``writer``). Each agent replies with strict JSON
-    ``{"next": <agent_name|DONE>, "message": <string>}``; the orchestrator
-    routes the message to the next agent until the LLM emits ``DONE`` or
-    ``max_handoffs`` is reached.
+    / ``writer`` by default, or any agent you have registered with
+    :func:`register_swarm_agent`). Each agent replies with strict JSON
+    ``{"next": <agent_name|DONE>, "message": <string>}``; the
+    orchestrator routes the message to the next agent until the LLM
+    emits ``DONE`` or ``max_handoffs`` is reached.
 
     Args:
         initial_agent: Starting agent name.
@@ -399,10 +489,31 @@ async def swarm_run(
         tools: Optional whitelist of tool names each agent may call.
             ``None`` (default) = every registered tool. ``[]`` = no
             tool-calling.
+        agents_json: Optional JSON array of additional / replacement
+            agent profiles to use for this call only. Schema::
+
+                [
+                  {"name": "reviewer", "system": "...", "description": "..."}
+                ]
+
+            If provided, the call's agent set is built from
+            ``agents_json`` (overrides the module-level registry for
+            this call). If empty, the module-level registry is used.
     """
+    agents: dict[str, swarm.Agent] | None = None
+    if agents_json.strip():
+        try:
+            agents = swarm.parse_agents_json(agents_json)
+        except FullADDMAXError as e:
+            return f"ERROR: {type(e).__name__}: {e}"
     try:
         return await swarm.run(
-            initial_agent, task, max_handoffs=max_handoffs, timeout=timeout, tools=tools
+            initial_agent,
+            task,
+            max_handoffs=max_handoffs,
+            timeout=timeout,
+            tools=tools,
+            agents=agents,
         )
     except FullADDMAXError as e:
         return f"ERROR: {type(e).__name__}: {e}"
