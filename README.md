@@ -544,6 +544,11 @@ loop (max 6 steps):
 |------|------|
 | `ping` | 健康检查，返回版本和当前 LLM 配置（key 脱敏） |
 | `configure_llm` | 配置 OpenAI 兼容的 base_url / api_key / model |
+| `configure_context_store` | 切到 memory / sqlite 后端 + 设 TTL |
+| `list_sessions` | 列出 store 里所有 session + Markdown 表格 + JSON |
+| `get_session` | 读一个 session 的完整 payload（JSON） |
+| `delete_session` | 删一个 session（级联删所有 key） |
+| `purge_expired_sessions` | GC 过期的 session（按 last_access + TTL） |
 | `list_agent_tools` | 列出当前已注册给 agent 调用的工具 + OpenAI specs JSON |
 | `unregister_agent_tool` | 取消注册某个 agent 工具 |
 | `obsidian_list_notes` | 列出 Obsidian vault 里的所有 .md 笔记 |
@@ -560,6 +565,7 @@ loop (max 6 steps):
 | `swarm_run` | Swarm：内置 researcher / coder / critic / writer 4 个 agent，支持 JSON 交接 + 自定义 profile |
 
 > `orchestrator_run` / `parallel_agents_run` / `map_reduce_run` / `swarm_run` 都接 `tools: list[str] | None` 参数（默认 `None` = 用全部已注册工具，`[]` = 关闭 function-calling）。
+> 这 4 个工作流都接 `session_id: str = ""` 参数（默认 `""` = 创建新 session，传值 = 绑定到已有 session，跨请求持久化）。
 > `swarm_run` 还接 `agents_json: str` 参数（默认 `""` = 用模块级 registry，JSON 数组 = 一次性覆盖本次调用的 agent 集）。
 > 所有 `obsidian_*` tool 都接 `vault_path: str` 参数（vault 根目录的绝对路径），同一个 server 可以在一个 session 内服务多个 vault。
 
@@ -727,7 +733,7 @@ mcp dev src/fulladdmax_mcp/server.py
 - [x] Function calling / agent-callable tools（v0.3.0）
 - [x] Obsidian vault 双向读写集成（v0.3.0）
 - [x] 自定义 Swarm agent profile 注册 API（v0.3.0）
-- [ ] 持久化 context（Redis / SQLite 后端）
+- [x] 持久化 context（SQLite + Memory，v0.4.0）
 - [ ] Token 用量统计 & 成本控制
 - [ ] 限流令牌桶（避免打爆 LLM 限流）
 
@@ -939,6 +945,128 @@ print(out)
 - 空 name / 空 system prompt 被拒绝
 - Built-in 可被删除（`unregister_swarm_agent("writer")`）— 除非重启进程，不会自动恢复
 - `swarm_run` 在 `initial_agent` 不在 agent 集时立即抛 `EmptyInputError`，不会在 LLM 调用后才报错
+
+---
+
+## 💾 持久化 Context / Persistent Session State
+
+工作流（orchestrator / parallel / map_reduce / swarm）在执行过程中会往一个**模块级** context store 写中间结果（planner 的子任务、worker 输出、handoff 链等），后续步骤读它做汇总。**默认**是 in-process memory，进程重启就丢。**持久化后端**用 SQLite — 数据落到单文件，跨进程 / 跨重启都还在。
+
+### 5 个新 MCP Tool
+
+| Tool | 行为 |
+|------|------|
+| `configure_context_store(backend, sqlite_path, ttl_seconds)` | 切到 `memory` 或 `sqlite`，设 TTL（默认 7 天） |
+| `list_sessions()` | 列出所有 session：Markdown 表格 + JSON 块 |
+| `get_session(session_id)` | 读一个 session 完整 payload（JSON） |
+| `delete_session(session_id)` | 删一个 session（级联删所有 key） |
+| `purge_expired_sessions(ttl_seconds=0)` | GC：删掉 `last_access` 早于 ttl 的所有 session（默认用 store 的 TTL） |
+
+外加 4 个工作流 tool 都接 `session_id: str = ""` 参数（默认创建新 session，传值 = 绑定到已有 session，跨请求持久化）。
+
+### 两种后端
+
+| Backend | 持久化 | 跨进程 | 适用场景 |
+|---------|--------|--------|---------|
+| `MemoryContextStore`（默认） | ❌ | ❌ | 单进程、单元测试、临时跑 |
+| `SqliteContextStore` | ✅ | ✅ | 长跑 server、跨重启、想看历史 session |
+
+### 客户端使用
+
+**1. 切到 SQLite：**
+
+> "调 `configure_context_store(backend='sqlite', sqlite_path='/tmp/fam-ctx.db')`"
+
+→ `"Configured SqliteContextStore at /tmp/fam-ctx.db (ttl=604800.0s)"`
+
+**2. 跑一个工作流并指定 session：**
+
+> "用 `orchestrator_run(task='分析 Q4 销售数据', session_id='quarterly-2026q4')`"
+
+session 里会自动写：
+- `task`、`subtasks`（planner 拆出来的）
+- `worker_results`（每个 worker 的输出）
+- `final`（synthesizer 的最终答案）
+
+**3. 任何时候（甚至 server 重启后）查 session：**
+
+> "调 `get_session('quarterly-2026q4')`"
+
+```json
+{
+  "task": "分析 Q4 销售数据",
+  "subtasks": ["提取关键指标", "对比 Q3", "生成图表"],
+  "worker_results": [
+    "Q4 营收 ¥1234 万，同比 +12%",
+    "Q3 对比：Q4 比 Q3 高 8%",
+    "图表代码：import matplotlib..."
+  ],
+  "final": "Q4 销售分析报告：..."
+}
+```
+
+**4. 跨请求续传：**
+
+> "昨天那个 `quarterly-2026q4` session 里的 final 字段你再展开下"
+
+agent 调 `get_session('quarterly-2026q4')` 拿到上次的结果，在新请求里继续工作。
+
+**5. 周期 GC：**
+
+> "调 `purge_expired_sessions()` 删掉 30 天没动过的 session"
+
+→ `"purged: 7 session(s)"`
+
+### Python 脚本用法
+
+```python
+import asyncio
+from fulladdmax_mcp import context as ctx
+from fulladdmax_mcp import orchestrator
+from fulladdmax_mcp.context_store import SqliteContextStore
+
+# 切到 SQLite (跨重启都还在)
+ctx.use_sqlite_store("/tmp/fam-ctx.db", ttl_seconds=30 * 86400)
+
+# 直接读写
+ctx.use_sqlite_store  # ...
+sid = ctx.new_session()
+ctx.put("user", "alice")
+ctx.put("step", 1)
+print(ctx.snapshot())  # {'user': 'alice', 'step': 1}
+
+# 跑工作流，自动写到当前 session
+out = asyncio.run(orchestrator.run("分析 Q4 数据", num_workers=2))
+
+# 直接读 store API
+store = ctx.store()  # SqliteContextStore
+print(store.list_sessions())
+print(store.snapshot(sid))
+
+# 重启后: 同一条 SQL 文件重新打开，数据还在
+```
+
+### 数据模型
+
+每个 session 是 sqlite 里的一行 `sessions(session_id, created_at, last_access)`，key/value 是 `entries(session_id, key, value)` — `value` 是 JSON 字符串。WAL 模式 + foreign key cascade — 删 session 自动删 entries。
+
+### 重要保证
+
+- **配置切换 close 上一个 store**（避免 SQLite 文件句柄泄漏）
+- **TTL 检查只看 `last_access`** — 每次 `put` / `merge` 自动 bump；`get` 默认不 bump（开关 `touch_on_read=True`）
+- **线程安全** — MemoryContextStore 用 `RLock`，SqliteContextStore 用 `check_same_thread=False` + 进程内 RLock
+- **JSON 兼容** — 任意 JSON-serialisable 值（str / int / list / dict / bool / None）。非 JSON 值用 `put(key, value, default=str)` 自动转字符串
+- **跨进程** — 同 SQL 文件，多进程安全（SQLite 内置锁）。**不要**多个进程同时改同一个 session
+
+### 用 session_id 跑工作流的详细语义
+
+| `session_id` 值 | 行为 |
+|------|------|
+| `""`（默认） | 创建新 session，session id 在 MCP tool 输出里可看（context 模块当前绑定） |
+| `"quarterly-2026q4"` | bind 到已有 session；**不存在则自动创建**（bind 是 idempotent） |
+| `""` 但 bind() 已经在外部调用 | 用外部 bind 的 session |
+
+`bind()` 是 idempotent — 给个不存在的 id 它会创建，给个已有的就接上。这让客户端不用先调 `create_session` 之类的预热接口。
 
 ---
 
