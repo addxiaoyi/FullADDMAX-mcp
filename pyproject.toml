@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 fulladdmax-mcp = "fulladdmax_mcp.server:main"
+fulladdmax-install = "fulladdmax_mcp._install_cli:main"
 
 [project.optional-dependencies]
 dev = [
