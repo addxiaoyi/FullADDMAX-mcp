@@ -21,6 +21,246 @@ FullADDMAX-mcp turns a single AI agent into a team. It exposes four battle-teste
 - **超时 + 重试 + 并发限流 / Timeout + retry + bounded concurrency** — 防止 LLM 限流和卡死
 - **零外部依赖运行**（除 `mcp` 和 `httpx`）/ No extra runtime deps beyond `mcp` and `httpx`
 - **完整测试 + 4 个可跑示例 / Full test suite + 4 runnable examples**
+- **🎛 一键看板 / One-command panel** — `fulladdmax-mcp panel` 生成纯 SVG 仪表盘（无 emoji），GitHub README 直接嵌入，**中英双语切换**，**3 主题**，**智能识别 host LLM**
+
+---
+
+## 🎛 工作面板 / Dashboard
+
+`fulladdmax-mcp` 自带一个**纯 SVG 仪表盘**（无任何 emoji / 图片依赖），随时呼出看当前 server 状态：版本、LLM 配置、限流、session、token 用量、注册的 agent 工具、swarm agent。一行命令生成，可直接放 GitHub README。
+
+```bash
+# 静态 SVG（3 主题 × 2 语言 = 6 组合）
+fulladdmax-mcp panel --out docs/panel-dark-en.svg --theme dark  --lang en
+fulladdmax-mcp panel --out docs/panel-dark-zh.svg --theme dark  --lang zh
+fulladdmax-mcp panel --out docs/panel-light-en.svg --theme light --lang en
+fulladdmax-mcp panel --out docs/panel-light-zh.svg --theme light --lang zh
+fulladdmax-mcp panel --out docs/panel-paper-en.svg --theme paper --lang en
+fulladdmax-mcp panel --out docs/panel-paper-zh.svg --theme paper --lang zh
+
+# 实时预览（默认每 5 秒刷新；支持切换语言和主题）
+fulladdmax-mcp panel --serve --port 8765 --refresh 5 --lang zh
+# → 打开 http://127.0.0.1:8765/panel
+
+# 交互式预览页（点按钮切 3 主题 + 2 语言）
+open docs/preview.html        # macOS
+start docs\preview.html       # Windows
+```
+
+**开箱即用**：即使没配 LLM，server 也能跑 knowledge / config / admin 操作。面板会显示柔和的 `(开箱即用)` 标签，而不是黄色警告。LLM 配置后，4 个 agent 工作流 + auto_workflow 自动可用。
+
+---
+
+## 🌳 AI 主动分裂：delegate 操作
+
+当一个任务包含 **3+ 个独立子任务**（如"研究 A、B、C 三个市场"），让 AI 主动调 `delegate` 比按顺序一个一个跑快 N 倍——因为框架会**自动并行**派发 N 个 worker 同时干活。
+
+```python
+# 一次性让 3 个 worker 并行调研
+agent(operation="delegate",
+      params_json='{"task": "调研北京、上海、深圳三个城市的电动车市场"}')
+# → 内部：启发式切分为 3 个 sub-task
+#       并行调 3 个 worker（max_parallel=5）
+#       合成最终报告
+
+# 显式给出子任务（跳过启发式）
+agent(operation="delegate",
+      params_json='{"task": "对比 3 个数据库",
+                    "children": ["Postgres", "MySQL", "SQLite"]}')
+
+# 强制分裂（atomic 任务也至少 2 个 worker 取不同视角）
+agent(operation="delegate",
+      params_json='{"task": "设计 API",
+                    "split": "always"}')
+
+# 强制单 worker
+agent(operation="delegate",
+      params_json='{"task": "生成一个句子",
+                    "split": "never"}')
+```
+
+**关键设计**
+
+| 参数 | 默认 | 含义 |
+|------|------|------|
+| `task` | — | 主任务（必填） |
+| `children` | 自动启发式 | 预定义子任务列表（跳过启发式） |
+| `split` | `"auto"` | `"auto"` / `"always"` / `"never"` |
+| `max_depth` | `2` | 递归深度上限（子代理可继续 `delegate`） |
+| `max_parallel` | `5` | 单层最大并发 worker 数 |
+
+**启发式分隔符**：CJK `，。、；。` + EN `,` `.` `?` `!` `;` + ` and ` ` then ` ` & ` + 换行。
+
+**AI 怎么知道要用它？** `agent` mega tool 的 docstring 明确写：
+> When a user request contains 3+ independent parts (e.g. "research A, B, and C"), call `delegate` instead of doing them one-by-one.
+
+---
+
+## 🚫 全部不依赖 LLM（FULLADDMAX_AGENT_OFFLINE 模式）
+
+设 `FULLADDMAX_AGENT_OFFLINE=1` 之后，**所有 7 个 agent op 都走 deterministic stub 路径**——无 LLM 调用、无网络、无 GPU，纯 Python 文本生成，输出结构化 Markdown 框架。
+
+```bash
+export FULLADDMAX_AGENT_OFFLINE=1
+```
+
+| op | 0 LLM 时行为 |
+|----|------------|
+| `orchestrator_run` | 1 planner 框架 + N worker 框架 + 1 synthesizer 框架 |
+| `parallel_agents_run` | N 个 worker 框架（每个 task 一段） |
+| `map_reduce_run` | map 阶段 N 个 item 框架 + reduce 阶段合并清单 |
+| `swarm_run` | initial agent 框架 + handoff 链模板 |
+| `auto_workflow` | **完全无 LLM**（纯启发式路由） |
+| `delegate` | N 个 sub-agent 框架（heuristic split） |
+| `hive_run` | 6 部门框架 × waves 波次 + 刑部批评回流说明 |
+
+**实测**（`scripts/verify_all_offline.py`）：
+```
+[OK]  orchestrator_run           -> ### orchestrator (offline stub)
+[OK]  parallel_agents_run        -> ### parallel_agents_run (offline stub)
+[OK]  map_reduce_run             -> ### map_reduce_run (offline stub)
+[OK]  swarm_run                  -> ### swarm_run (offline stub)
+[OK]  auto_workflow              -> ### auto_workflow → `parallel`
+[OK]  delegate                   -> ### delegate (offline stub)
+[OK]  hive_run                   -> ### hive_run (offline stub — 三省六部 + 蜂巢)
+```
+
+**三态行为总结**
+
+| 状态 | 行为 |
+|------|------|
+| 1. `FULLADDMAX_AGENT_OFFLINE=1` | **强制走 stub**（不依赖 LLM 状态） |
+| 2. 没设 env + 没 LLM | 返 lazy-hint 文本（教程式） |
+| 3. 配了 LLM | 走真 LLM 路径 |
+
+→ **真正的"开箱即用"**：装完即用，不需 LLM、不需配置、不需联网。
+
+## 🐝 三省六部蜂巢：hive_run 操作
+
+`delegate` 适合"独立子任务并行"；当任务是**"一个复杂事需要 N 个角度同时看"**时，调用 `hive_run`：
+
+| 部门 | 角度 |
+|------|------|
+| **吏部 (Personnel)** | 利益相关者、角色、决策点 |
+| **户部 (Revenue)** | 成本、ROI、预算 |
+| **礼部 (Protocol)** | 合规、伦理、UX、标准 |
+| **兵部 (Defense)** | 风险、边缘 case、扩展性 |
+| **刑部 (Justice)** | 红队、批评、找最弱假设 |
+| **工部 (Engineering)** | 具体计划、里程碑、架构 |
+
+```python
+# 一声令下，6 部门同时进攻
+agent(operation="hive_run",
+      params_json='{"task": "设计一个全球支付系统"}')
+# → wave 1: 6 个 minister 并行（无 max_parallel 限制）
+# → 刑部 (Justice) 的批评提炼为 feedback
+# → wave 2: 6 个 minister 拿 feedback 重新输出
+# → 12 个子代理在 < 1 秒内完成
+
+# 自定义部门（自定义角度）
+agent(operation="hive_run",
+      params_json='{"task": "分析市场进入策略",
+                    "departments": ["marketing", "legal", "engineering"]}')
+
+# 3 波次（每波更精炼）
+agent(operation="hive_run",
+      params_json='{"task": "重构单体为微服务",
+                    "waves": 3}')
+
+# 提高预算上限
+agent(operation="hive_run",
+      params_json='{"task": "...",
+                    "max_subagents": 500}')
+```
+
+**关键区别：hive_run vs delegate**
+
+|  | `delegate` | `hive_run` |
+|---|---|---|
+| 拆分方式 | 启发式按 `,` `、` `and` 等拆 | 固定 N 部门，每部门看一个角度 |
+| 适用任务 | 独立子任务（研究 A, B, C） | 一个事多角度（设计 + 风险 + 成本 + ...） |
+| 反馈循环 | 无 | **有**（刑部批评→其他部门第 2 波） |
+| 递归深度 | `max_depth=2` | `max_depth=null`（默认无限；可配） |
+| 并发上限 | `max_parallel=5` | **无**（6 部门全部同时跑） |
+| waves 上限 | N/A | **20 硬上限**（超过抛 ValueError，不静默截断） |
+
+**三层硬保护**（按触发顺序）：
+
+1. **waves ≤ 20** — 超过立即抛 `ValueError("...exceeds hard ceiling max_waves=20...")`，让用户知道
+2. **max_depth** — session context 跟踪 `hive_depth`；跨调用 LLM 想再调 hive_run 时若超限，降级为单次 `parallel_agents_run` 兜底
+3. **max_subagents = 200** — 总子代理预算；达到后跳过当前 wave，运行坍缩为最终合成
+
+**为什么硬上限不叫"没有数量限制"？**「没有限制」指的是**设计上不阻止 AI 自主扩展**：递归、并发、waves 数都由 LLM 自由决定。但工程上必须给"AI 行为异常 / 用户传错参数"留 3 道安全网，否则 MCP server 会爆。这是负责任的"自由"。
+
+### 主题 × 语言矩阵 / Theme × Language matrix
+
+|             | 英文 `en`               | 中文 `zh`                   |
+|-------------|--------------------------|------------------------------|
+| `dark`     | `panel-dark-en.svg`     | `panel-dark-zh.svg`         |
+| `light`    | `panel-light-en.svg`    | `panel-light-zh.svg`        |
+| `paper`    | `panel-paper-en.svg`    | `panel-paper-zh.svg`        |
+
+**3 个主题用途**：`dark`（GitHub README / 演示截图）、`light`（打印 / 浅色 wiki）、`paper`（复古 archive 风格）
+
+### 实际效果 / What it looks like
+
+下面这 6 张就是直接 `fulladdmax-mcp panel` 命令生成的 SVG（1280×800 像素、纯 SVG 原始元素 = `rect` / `polygon` / `text` / `circle`，**无 emoji**）：
+
+**英文版：**
+
+| 主题 | 截图 |
+|------|------|
+| dark  | ![dashboard dark en](docs/panel-dark-en.svg) |
+| light | ![dashboard light en](docs/panel-light-en.svg) |
+| paper | ![dashboard paper en](docs/panel-paper-en.svg) |
+
+**中文版：**
+
+| 主题 | 截图 |
+|------|------|
+| dark  | ![dashboard dark zh](docs/panel-dark-zh.svg) |
+| light | ![dashboard light zh](docs/panel-light-zh.svg) |
+| paper | ![dashboard paper zh](docs/panel-paper-zh.svg) |
+
+### 数据怎么来 / Where the data comes from
+
+`panel` 通过**进程内调用 4 个 mega tool** 收集数据 —— 顺带也是 mega tool 链路的冒烟测试：
+
+| 卡片 | mega tool 调用 |
+|------|---------------|
+| LLM 配置 / LLM Config | `admin(operation="ping")` |
+| 限流设置 / Rate Limit | `admin(operation="get_rate_limit_status")` |
+| 会话 / Sessions | `admin(operation="list_sessions")` |
+| Token 用量 / Usage | `admin(operation="get_usage_stats")` |
+| 已注册工具 / Agent Tools | `admin(operation="list_agent_tools")` |
+| Swarm 代理 / Swarm Agents | `admin(operation="list_swarm_agents")` |
+
+> 任何 mega tool 报错都会被收集成 `unhealthy` 状态 + 底部红色错误条，但**不会**让 SVG 渲染失败。
+
+### 智能识别 host LLM / Smart host LLM detection
+
+如果 `FULLADDMAX_API_KEY` 默认是空的，panel 会**自动扫环境变量**判断 server 是不是被宿主 AI 调起（Claude Desktop / Cursor / Codex / Continue.dev / GitHub Copilot / Cline / Aider / Zed 之一）。扫到就在「api_key」字段显示 `继承自 <宿主>` 并染绿色；如果一个都没扫到就显示 `请配置 FULLADDMAX_API_KEY` 并染黄色：
+
+| 情况 | api_key 单元格显示 | 颜色 | 副标题 |
+|------|---------------------|------|--------|
+| 配了真实 key | `sk-xxxx****`（已脱敏）| 白色 | — |
+| 配了空 + 检测到 Claude Desktop | `继承自 Claude Desktop` | 绿色 | `宿主 LLM: Claude Desktop` |
+| 配了空 + 裸跑 | `(未设置)` | 黄色 | `请配置 FULLADDMAX_API_KEY` |
+
+环境变量识别规则（任一前缀命中即视为命中）：
+
+| 宿主 AI | 识别的 env 前缀 |
+|---------|-----------------|
+| Claude Desktop / Claude Code | `CLAUDE_` / `ANTHROPIC_` / `CLAUDE_CODE` |
+| Cursor | `CURSOR_` |
+| Codex CLI | `CODEX_` / `OPENAI_CODEX_` |
+| Continue.dev | `CONTINUE_` |
+| GitHub Copilot | `COPILOT_` / `GITHUB_COPILOT_` |
+| Cline | `CLINE_` |
+| Aider | `AIDER_` |
+| Zed | `ZED_` / `ZED_AGENT_` |
+
+> Trae IDE 自身在 spawn MCP server 时会注入 `CLAUDE_CODE_*` env var，所以 `fulladdmax-mcp panel` 在 Trae 里直接跑就会显示「继承自 Claude Desktop」——你不用自己 export 任何东西。
 
 ---
 
@@ -540,60 +780,158 @@ loop (max 6 steps):
 
 ## 🛠️ 工具列表 / Tool Reference
 
-| Tool | 用途 |
-|------|------|
-| `ping` | 健康检查，返回版本和当前 LLM 配置（key 脱敏） |
-| `configure_llm` | 配置 OpenAI 兼容的 base_url / api_key / model |
-| `configure_context_store` | 切到 memory / sqlite 后端 + 设 TTL |
-| `list_sessions` | 列出 store 里所有 session + Markdown 表格 + JSON |
-| `get_session` | 读一个 session 的完整 payload（JSON） |
-| `delete_session` | 删一个 session（级联删所有 key） |
-| `purge_expired_sessions` | GC 过期的 session（按 last_access + TTL） |
-| `configure_rate_limit` | 配令牌桶：global_rpm / global_tpm / per_session_rpm / per_session_tpm |
-| `reset_rate_limit` | 限流重置为 unlimited |
-| `get_rate_limit_status` | 限流配置 + 桶状态（JSON） |
-| `get_usage_stats` | 汇总 token 用量 + 成本（按 model / session 分组） |
-| `list_usage_records` | 列最近 N 条 usage 记录（时间倒序） |
-| `reset_usage_stats` | 清空 usage 记录（保留价格表） |
-| `configure_pricing_override` | 覆盖/新增模型的 prompt/completion 单价 |
-| `list_agent_tools` | 列出当前已注册给 agent 调用的工具 + OpenAI specs JSON |
-| `unregister_agent_tool` | 取消注册某个 agent 工具 |
-| `obsidian_list_notes` | 列出 Obsidian vault 里的所有 .md 笔记 |
-| `obsidian_read_note` | 读一个 .md 笔记，返回 frontmatter + body |
-| `obsidian_search_notes` | 关键字搜索笔记（case-insensitive 默认） |
-| `obsidian_write_note` | 创建/覆盖一个 .md 笔记（带 frontmatter） |
-| `obsidian_append_note` | 追加内容到 .md 笔记（保留 frontmatter） |
-| `register_swarm_agent` | 注册自定义 Swarm agent profile（name / system / description） |
-| `unregister_swarm_agent` | 取消注册某个 Swarm agent |
-| `list_swarm_agents` | 列出当前所有 Swarm agent + JSON |
-| `orchestrator_run` | Orchestrator-Workers：planner 拆任务 → N 个 worker 并行 → synthesizer 汇总 |
-| `parallel_agents_run` | 并行子代理：最多 10 个并发，每个失败单独记录不中断整体 |
-| `map_reduce_run` | Map-Reduce：map 阶段并行分片，reduce 阶段合并 |
-| `swarm_run` | Swarm：内置 researcher / coder / critic / writer 4 个 agent，支持 JSON 交接 + 自定义 profile |
+> ## ⚠️ BREAKING CHANGE in v0.6.0
+>
+> v0.6.0 把 28 个独立 tool 整合成了 **4 个 mega tool**：
+> - 客户端只看到 4 个 tool 名字（LLM 提示中工具列表从 28 → 4，更短）
+> - 每个 mega tool 接 `operation` + `params_json` + `session_id` 三个参数
+> - 业务参数全部走 `params_json` JSON 字符串
+>
+> **完全替换** —— 旧的 28 个 tool 名已经移除（无 deprecated alias）。需要迁移请看文末 [迁移指南](#-迁移指南--migration-guide-v05--v06)。
 
-> `orchestrator_run` / `parallel_agents_run` / `map_reduce_run` / `swarm_run` 都接 `tools: list[str] | None` 参数（默认 `None` = 用全部已注册工具，`[]` = 关闭 function-calling）。
-> 这 4 个工作流都接 `session_id: str = ""` 参数（默认 `""` = 创建新 session，传值 = 绑定到已有 session，跨请求持久化）。
-> 这 4 个工作流**不**会绕过限流 — 任何 LLM 调用都会先 acquire 令牌桶再发 HTTP 请求。超限返回 `ERROR: RateLimitError: ...`。
-> `swarm_run` 还接 `agents_json: str` 参数（默认 `""` = 用模块级 registry，JSON 数组 = 一次性覆盖本次调用的 agent 集）。
-> 所有 `obsidian_*` tool 都接 `vault_path: str` 参数（vault 根目录的绝对路径），同一个 server 可以在一个 session 内服务多个 vault。
+### 4 个 mega tool
 
-### `orchestrator_run(task, num_workers=3, timeout=300)`
+| Mega tool | 用途 | operation 数量 |
+|-----------|------|----------------|
+| `agent` | Multi-agent 工作流（orchestrator / parallel / map_reduce / swarm） | 4 |
+| `knowledge` | Obsidian vault 双向读写 | 5 |
+| `config` | 运行时配置 & 注册表变更（写操作） | 10 |
+| `admin` | 只读 / 状态查询 | 9 |
+| **合计** | | **28** |
+
+### 调用模式
+
+每个 mega tool 都有相同的 3 个顶层参数：
+
+```python
+# 调用形式
+agent(
+    operation: str,        # 业务方法名（见下表）
+    params_json: str = "", # 业务参数（JSON 字符串，{} = 无）
+    session_id: str = "",  # 顶层 session id（用于 context / rate limit / usage 隔离）
+) -> str                   # Markdown / JSON 报告
+```
+
+### 28 个 operation 清单
+
+#### `agent(operation, params_json, session_id="")` — Multi-agent workflows
+
+| operation | params | 用途 |
+|-----------|--------|------|
+| `orchestrator_run` | `task` / `num_workers?` / `timeout?` / `tools?` | Orchestrator-Workers：planner 拆任务 → N 个 worker 并行 → synthesizer 汇总 |
+| `parallel_agents_run` | `tasks` / `max_concurrent?` / `timeout?` / `tools?` | 并行子代理：最多 10 个并发，每个失败单独记录不中断整体 |
+| `map_reduce_run` | `items` / `map_prompt?` / `reduce_prompt?` / `max_concurrent?` / `timeout?` / `tools?` | Map-Reduce：map 阶段并行分片，reduce 阶段合并 |
+| `swarm_run` | `initial_agent` / `task` / `max_handoffs?` / `timeout?` / `tools?` / `agents_json?` | Swarm：4 个内置 agent + 自定义 profile，JSON 交接 |
+
+#### `knowledge(operation, params_json, session_id="")` — Obsidian vault
+
+| operation | params | 用途 |
+|-----------|--------|------|
+| `obsidian_list_notes` | `vault_path` / `folder?` / `limit?` | 列出 vault 里的 .md 笔记 |
+| `obsidian_read_note` | `vault_path` / `path` | 读一个笔记（frontmatter + body） |
+| `obsidian_search_notes` | `vault_path` / `keyword` / `folder?` / `case_sensitive?` / `limit?` | 关键字搜索 |
+| `obsidian_write_note` | `vault_path` / `path` / `body` / `frontmatter_json?` / `overwrite?` | 创建/覆盖笔记 |
+| `obsidian_append_note` | `vault_path` / `path` / `content` | 追加内容（保留 frontmatter） |
+
+#### `config(operation, params_json, session_id="")` — 写操作
+
+| operation | params | 用途 |
+|-----------|--------|------|
+| `configure_llm` | `base_url` / `api_key` / `model?` / `temperature?` / `max_tokens?` / `timeout?` / `max_retries?` | 配置 LLM 终结点 |
+| `configure_context_store` | `backend?` / `sqlite_path?` / `ttl_seconds?` | 切 memory/sqlite 后端 |
+| `configure_rate_limit` | `global_rpm?` / `global_tpm?` / `per_session_rpm?` / `per_session_tpm?` / `default_estimated_tokens?` | 配令牌桶限流 |
+| `configure_pricing_override` | `model` / `prompt_per_million` / `completion_per_million` | 覆盖模型定价 |
+| `register_swarm_agent` | `name` / `system` / `description?` / `overwrite?` | 注册 Swarm agent |
+| `unregister_swarm_agent` | `name` | 注销 Swarm agent |
+| `unregister_agent_tool` | `name` | 注销 agent function-calling tool |
+| `reset_rate_limit` | _无_ | 重置限流 |
+| `reset_usage_stats` | _无_ | 清空 usage 记录 |
+| `purge_expired_sessions` | `ttl_seconds?` | GC 过期 session |
+
+#### `admin(operation, params_json, session_id="")` — 只读 / 状态
+
+| operation | params | 用途 |
+|-----------|--------|------|
+| `ping` | _无_ | 健康检查 |
+| `list_sessions` | _无_ | 列出所有 session |
+| `get_session` | `session_id` | 读一个 session 的完整 payload |
+| `delete_session` | `session_id` | 删一个 session |
+| `list_agent_tools` | _无_ | 列出已注册的 agent 工具 |
+| `list_swarm_agents` | _无_ | 列出已注册的 Swarm agent |
+| `get_rate_limit_status` | _无_ | 限流状态快照 |
+| `get_usage_stats` | `session_id?` / `model?` / `since_ts?` | 汇总 token 用量 + 成本 |
+| `list_usage_records` | `session_id?` / `model?` / `since_ts?` / `limit?` | 列最近 N 条 usage 记录 |
+
+### 错误格式
+
+```
+ERROR: bad_op:    operation is required / unknown operation 'X'. available: [...]
+ERROR: bad_json:  line 3 column 5: Expecting property name enclosed in double quotes
+ERROR: bad_param: missing required field 'task' for operation 'orchestrator_run'
+ERROR: bad_type:  field 'num_workers' expected int, got str
+ERROR: handler:   <ExceptionClass>: <message>
+```
+
+所有 `api_key` / `token` / `password` / `secret` 等敏感字段在错误回显中**自动脱敏**为前 4 字符 + `****`。
+
+### 客户端调用示例
+
+**Claude Desktop / Cursor / Trae 自然语言调用：**
+
+> "用 fulladdmax 的 `agent` mega tool 跑一个 orchestrator_run，task 是 '为一个 todo app 设计 REST API'，拆成 3 个子任务"
+
+模型会调：
+
+```json
+agent(
+  operation: "orchestrator_run",
+  params_json: '{"task":"为一个 todo app 设计 REST API","num_workers":3}',
+  session_id: ""
+)
+```
+
+**直接 HTTP / JSON-RPC 调用：**
+
+```bash
+curl -X POST http://127.0.0.1:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc":"2.0","id":1,"method":"tools/call",
+    "params":{
+      "name":"agent",
+      "arguments":{
+        "operation":"orchestrator_run",
+        "params_json":"{\"task\":\"hello\"}"
+      }
+    }
+  }'
+```
+
+### 内部工作流细节
+
+> 4 个工作流（`agent.orchestrator_run` / `parallel_agents_run` / `map_reduce_run` / `swarm_run`）都接 `tools: list[str] | None` 参数（默认 `None` = 用全部已注册工具，`[]` = 关闭 function-calling）。
+> 4 个工作流都接 `session_id: str = ""` 参数（默认 `""` = 创建新 session，传值 = 绑定到已有 session，跨请求持久化）。
+> 4 个工作流**不**会绕过限流 —— 任何 LLM 调用都会先 acquire 令牌桶再发 HTTP 请求。超限返回 `ERROR: RateLimitError: ...`。
+> `agent.swarm_run` 还接 `agents_json: str` 参数（默认 `""` = 用模块级 registry，JSON 数组 = 一次性覆盖本次调用的 agent 集）。
+> 所有 `knowledge.obsidian_*` operation 都接 `vault_path: str` 参数（vault 根目录的绝对路径），同一个 server 可以在一个 session 内服务多个 vault。
+
+#### `agent.orchestrator_run({"task": str, "num_workers": int=3, "timeout": float=300})`
 
 1. Planner agent 把 `task` 拆成 `num_workers`（1-10）个独立子任务（JSON 数组）
 2. Worker agent 并行执行每个子任务
 3. Synthesizer agent 汇总所有结果
 
-### `parallel_agents_run(tasks, max_concurrent=10, timeout=300)`
+#### `agent.parallel_agents_run({"tasks": list[str], "max_concurrent": int=10, "timeout": float=300})`
 
 `tasks` 是 1-10 个独立 prompt 字符串列表，并发执行；输出为 Markdown 报告，每个任务一个 `## Task #N` 小节。
 
-### `map_reduce_run(items, map_prompt="", reduce_prompt="", max_concurrent=10, timeout=600)`
+#### `agent.map_reduce_run({"items": list[str], "map_prompt": str="", "reduce_prompt": str="", "max_concurrent": int=10, "timeout": float=600})`
 
 - `map_prompt` 含占位符 `{item}` → 填入每个 item
 - `reduce_prompt` 含占位符 `{results}` → 填入合并后的 map 输出
 - 留空使用通用模板
 
-### `swarm_run(initial_agent, task, max_handoffs=8, timeout=300)`
+#### `agent.swarm_run({"initial_agent": str, "task": str, "max_handoffs": int=8, "timeout": float=300})`
 
 - `initial_agent` ∈ {`researcher`, `coder`, `critic`, `writer`}
 - 每个 agent 必须以 JSON `{"next": <name|DONE>, "message": <string>}` 回复
@@ -1233,3 +1571,156 @@ for model, s in summary.by_model.items():
 ## 📄 许可证 / License
 
 MIT © addxiaoyi
+
+---
+
+## 🔄 迁移指南 / Migration Guide (v0.5 → v0.6)
+
+v0.6.0 把 28 个独立 tool 整合成 4 个 mega tool（`agent` / `knowledge` / `config` / `admin`）。这是一个 **breaking change** —— 旧的 28 个 tool 名已经完全移除，**没有** deprecated alias。
+
+### 1. 参数形式变化
+
+| 旧 (v0.5) | 新 (v0.6) |
+|-----------|-----------|
+| 28 个独立 tool 名 | 4 个 mega tool 名 |
+| 业务参数作为函数参数 | 业务参数打包成 `params_json` JSON 字符串 |
+| `session_id` 只在 4 个 workflow tool 上有 | `session_id` 在所有 4 个 mega tool 的顶层签名上 |
+
+### 2. 完整对照表
+
+| 旧 tool (v0.5) | 新 mega tool + operation (v0.6) |
+|----------------|----------------------------------|
+| `ping` | `admin(operation="ping", params_json="")` |
+| `configure_llm` | `config(operation="configure_llm", params_json='{...}')` |
+| `list_agent_tools` | `admin(operation="list_agent_tools", params_json="")` |
+| `unregister_agent_tool` | `config(operation="unregister_agent_tool", params_json='{"name": "..."}')` |
+| `obsidian_list_notes` | `knowledge(operation="obsidian_list_notes", params_json='{"vault_path": "..."}')` |
+| `obsidian_read_note` | `knowledge(operation="obsidian_read_note", params_json='{"vault_path": "...", "path": "..."}')` |
+| `obsidian_search_notes` | `knowledge(operation="obsidian_search_notes", params_json='{...}')` |
+| `obsidian_write_note` | `knowledge(operation="obsidian_write_note", params_json='{...}')` |
+| `obsidian_append_note` | `knowledge(operation="obsidian_append_note", params_json='{...}')` |
+| `configure_context_store` | `config(operation="configure_context_store", params_json='{...}')` |
+| `list_sessions` | `admin(operation="list_sessions", params_json="")` |
+| `get_session` | `admin(operation="get_session", params_json='{"session_id": "..."}')` |
+| `delete_session` | `admin(operation="delete_session", params_json='{"session_id": "..."}')` |
+| `purge_expired_sessions` | `config(operation="purge_expired_sessions", params_json='{...}')` |
+| `configure_rate_limit` | `config(operation="configure_rate_limit", params_json='{...}')` |
+| `reset_rate_limit` | `config(operation="reset_rate_limit", params_json="")` |
+| `get_rate_limit_status` | `admin(operation="get_rate_limit_status", params_json="")` |
+| `get_usage_stats` | `admin(operation="get_usage_stats", params_json='{...}')` |
+| `list_usage_records` | `admin(operation="list_usage_records", params_json='{...}')` |
+| `reset_usage_stats` | `config(operation="reset_usage_stats", params_json="")` |
+| `configure_pricing_override` | `config(operation="configure_pricing_override", params_json='{...}')` |
+| `register_swarm_agent` | `config(operation="register_swarm_agent", params_json='{...}')` |
+| `unregister_swarm_agent` | `config(operation="unregister_swarm_agent", params_json='{"name": "..."}')` |
+| `list_swarm_agents` | `admin(operation="list_swarm_agents", params_json="")` |
+| `orchestrator_run` | `agent(operation="orchestrator_run", params_json='{"task": "..."}')` |
+| `parallel_agents_run` | `agent(operation="parallel_agents_run", params_json='{"tasks": [...]}')` |
+| `map_reduce_run` | `agent(operation="map_reduce_run", params_json='{"items": [...]}')` |
+| `swarm_run` | `agent(operation="swarm_run", params_json='{"initial_agent": "...", "task": "..."}')` |
+
+### 3. 迁移示例
+
+**v0.5 (旧)：**
+```python
+await mcp_client.call_tool("orchestrator_run", {
+    "task": "为一个 todo app 设计 REST API",
+    "num_workers": 3,
+    "tools": ["get_weather"],
+})
+```
+
+**v0.6 (新)：**
+```python
+await mcp_client.call_tool("agent", {
+    "operation": "orchestrator_run",
+    "params_json": json.dumps({
+        "task": "为一个 todo app 设计 REST API",
+        "num_workers": 3,
+        "tools": ["get_weather"],
+    }),
+    "session_id": "my-session-001",
+})
+```
+
+**v0.5 (旧)：**
+```python
+await mcp_client.call_tool("configure_llm", {
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "sk-...",
+    "model": "gpt-4o-mini",
+})
+```
+
+**v0.6 (新)：**
+```python
+await mcp_client.call_tool("config", {
+    "operation": "configure_llm",
+    "params_json": json.dumps({
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "sk-...",
+        "model": "gpt-4o-mini",
+    }),
+    "session_id": "",
+})
+```
+
+### 4. Python SDK / 白盒测试
+
+如果你的代码直接 import `from fulladdmax_mcp.server import ping, configure_llm, ...`（白盒测试 / 内部 SDK），**完全不需要改** —— v0.6 仍把 28 个内部函数从 `server` 模块顶层导出。
+
+```python
+# 这在 v0.5 和 v0.6 都能用
+from fulladdmax_mcp.server import ping, configure_llm, orchestrator_run
+print(ping())
+out = await orchestrator_run("design REST API for todo", num_workers=3)
+```
+
+### 5. LLM 提示词 / 客户端配置
+
+如果你之前的 LLM 提示词直接列了 28 个 tool 名（用 prompt engineering 调过），现在只需要列 4 个：
+
+```
+Available tools:
+  - agent(operation, params_json, session_id)
+  - knowledge(operation, params_json, session_id)
+  - config(operation, params_json, session_id)
+  - admin(operation, params_json, session_id)
+```
+
+每个 mega tool 的 docstring 都会自动告诉 LLM 它的所有 `operation` 和 `params_json` 格式。
+
+### 6. 错误处理
+
+旧：`ERROR: <ExceptionClass>: <msg>`（来自 handler）
+新：
+- `ERROR: bad_op: <reason>`（operation 错）
+- `ERROR: bad_json: <reason>`（JSON 解析错）
+- `ERROR: bad_param: <reason>`（缺必填 / 错 choice）
+- `ERROR: bad_type: <reason>`（类型不匹配）
+- `ERROR: handler: <reason>`（handler 内部异常）
+- 所有 `api_key` / `token` / `secret` 等敏感字段在错误回显中**自动脱敏**为 `前4字符****`
+
+### 7. 一键改写脚本（伪代码）
+
+```python
+# 把所有旧的 tool call 自动转成 mega tool 形式
+def migrate_call(tool_name, args):
+    area = {
+        "orchestrator_run": ("agent", "orchestrator_run"),
+        "parallel_agents_run": ("agent", "parallel_agents_run"),
+        "map_reduce_run": ("agent", "map_reduce_run"),
+        "swarm_run": ("agent", "swarm_run"),
+        "configure_llm": ("config", "configure_llm"),
+        # ... 其余 24 个
+    }[tool_name]
+    mega_name, op = area
+    return {
+        "name": mega_name,
+        "arguments": {
+            "operation": op,
+            "params_json": json.dumps(args),
+            "session_id": args.pop("session_id", ""),
+        },
+    }
+```

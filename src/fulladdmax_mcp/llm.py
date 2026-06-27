@@ -20,14 +20,32 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 from . import context as ctx_mod
+from .env_autodetect import (
+    DEFAULT_BASE_URL,
+    DEFAULT_MODEL,
+    EnvSnapshot,
+    detect_host_ai,
+    detect_llm_env,
+)
 from .errors import LLMError, LLMTimeoutError
 from .rate_limit import get_limiter
 from .usage import UsageRecord, store as usage_store
 
 log = logging.getLogger(__name__)
 
-DEFAULT_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_MODEL = "gpt-4o-mini"
+# DEFAULT_BASE_URL / DEFAULT_MODEL re-exported for backward compatibility.
+__all__ = [
+    "DEFAULT_BASE_URL",
+    "DEFAULT_MODEL",
+    "LLMConfig",
+    "LLMClient",
+    "ToolSpec",
+    "ToolCall",
+    "get_config",
+    "get_client",
+    "set_config",
+    "aclose",
+]
 
 # Type alias for an OpenAI-compatible tool schema:
 #   {"type": "function", "function": {"name": ..., "description": ..., "parameters": {...}}}
@@ -58,16 +76,47 @@ class LLMConfig:
 
     @classmethod
     def from_env(cls) -> "LLMConfig":
-        """Read configuration from ``FULLADDMAX_*`` (or ``OPENAI_*``) env vars."""
+        """Read configuration from the process environment.
+
+        Uses :func:`fulladdmax_mcp.env_autodetect.detect_llm_env` to
+        resolve the endpoint, which transparently picks up host-injected
+        credentials (Claude Desktop, Cursor, Codex, ...), explicit
+        ``FULLADDMAX_*`` overrides, ``OPENAI_*`` fallbacks, and local
+        LLM servers (Ollama, vLLM, LM Studio).  Fields not present in
+        the environment fall back to the dataclass defaults.
+        """
+        snap: EnvSnapshot = detect_llm_env()
         return cls(
-            base_url=os.getenv("FULLADDMAX_BASE_URL", DEFAULT_BASE_URL).rstrip("/"),
-            api_key=os.getenv("FULLADDMAX_API_KEY", os.getenv("OPENAI_API_KEY", "")),
-            model=os.getenv("FULLADDMAX_MODEL", DEFAULT_MODEL),
+            base_url=(snap.base_url or DEFAULT_BASE_URL).rstrip("/"),
+            api_key=snap.api_key,
+            model=snap.model or DEFAULT_MODEL,
             temperature=float(os.getenv("FULLADDMAX_TEMPERATURE", "0.7")),
             max_tokens=int(os.getenv("FULLADDMAX_MAX_TOKENS", "2048")),
             timeout=float(os.getenv("FULLADDMAX_TIMEOUT", "60")),
             max_retries=int(os.getenv("FULLADDMAX_MAX_RETRIES", "2")),
         )
+
+    def is_configured(self) -> bool:
+        """Return True iff an ``api_key`` has been set (real or inherited)."""
+        return bool(self.api_key)
+
+    def source(self) -> str:
+        """Best-effort label for *where* the current config came from.
+
+        Used by the panel and lazy-loading error messages to show a
+        friendly explanation like "inherited from Cursor" instead of
+        the cryptic "api_key=(unset)".
+        """
+        host_id, host_label = detect_host_ai()
+        if host_label and self.api_key:
+            return f"inherited from {host_label}"
+        if self.api_key and os.getenv("FULLADDMAX_API_KEY"):
+            return "FULLADDMAX_API_KEY"
+        if self.api_key and os.getenv("OPENAI_API_KEY"):
+            return "OPENAI_API_KEY"
+        if self.api_key:
+            return "configured"
+        return ""
 
     def masked(self) -> dict[str, Any]:
         """Return a dict suitable for logging (api_key is redacted)."""

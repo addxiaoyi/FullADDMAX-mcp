@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" width="1280" height="800" font-family="system-ui, -apple-system, Segoe UI, sans-serif">
+<rect x="0" y="0" width="1280" height="800" fill="#0F0F1E"/>
+<rect x="0" y="0" width="1280" height="70" fill="#1A1A2E"/>
+<rect x="0" y="68" width="1280" height="2" fill="#9D2BFF"/>
+<polygon points="30.0,51.0 16.1,43.0 16.1,27.0 30.0,19.0 43.9,27.0 43.9,43.0" fill="#9D2BFF" stroke="#22C6FF" stroke-width="1.5"/>
+<text x="62" y="41" font-size="22" font-weight="bold" fill="#E8E8F0">FullADDMAX-mcp</text>
+<text x="240" y="41" font-family="monospace" font-size="14" fill="#22C6FF">v0.3.0</text>
+<text x="1264" y="31" font-family="monospace" font-size="12" fill="#8888A0" text-anchor="end">2026-06-27 17:30:19</text>
+<text x="1264" y="49" font-family="monospace" font-size="12" fill="#8888A0" text-anchor="end">uptime 0m</text>
+<rect x="1044" y="23" width="80" height="24" rx="12" ry="12" fill="#50E3A4"/>
+<circle cx="1058" cy="35" r="4" fill="#1A1A2E"/>
+<text x="1068" y="39" font-size="12" font-weight="bold" fill="#1A1A2E">healthy</text>
+<rect x="16" y="86" width="618" height="224" rx="8" ry="8" fill="#1A1A2E" stroke="#3D3D5C" stroke-width="1"/>
+<rect x="16" y="86" width="618" height="32" rx="8" ry="8" fill="#232342"/>
+<rect x="16" y="108" width="618" height="10" fill="#232342"/>
+<rect x="28" y="94" width="20" height="16" rx="3" ry="3" fill="#9D2BFF"/>
+<text x="38" y="106" font-family="monospace" font-size="11" font-weight="bold" fill="#1A1A2E" text-anchor="middle">1</text>
+<text x="58" y="106" font-family="system-ui" font-size="14" font-weight="bold" fill="#E8E8F0">LLM Config</text>
+<text x="32" y="144" font-family="system-ui" font-size="12" fill="#8888A0">model</text>
+<text x="142" y="144" font-family="monospace" font-size="12" fill="#E8E8F0">claude-sonnet-4-5</text>
+<text x="32" y="166" font-family="system-ui" font-size="12" fill="#8888A0">base_url</text>
+<text x="142" y="166" font-family="monospace" font-size="12" fill="#E8E8F0">https://api.anthropic.com/v1</text>
+<text x="32" y="188" font-family="system-ui" font-size="12" fill="#8888A0">api_key</text>
+<text x="142" y="188" font-family="monospace" font-size="12" fill="#50E3A4">inherited from Claude Desktop</text>
+<text x="32" y="210" font-family="system-ui" font-size="12" fill="#8888A0">timeout</text>
+<text x="142" y="210" font-family="monospace" font-size="12" fill="#E8E8F0">60.0s</text>
+<text x="32" y="232" font-family="system-ui" font-size="12" fill="#8888A0">max_retries</text>
+<text x="142" y="232" font-family="monospace" font-size="12" fill="#E8E8F0">2</text>
+<text x="32" y="248" font-family="system-ui" font-size="11" fill="#8888A0" font-style="italic">host-LLM: Claude Desktop</text>
+<rect x="646" y="86" width="618" height="224" rx="8" ry="8" fill="#1A1A2E" stroke="#3D3D5C" stroke-width="1"/>
+<rect x="646" y="86" width="618" height="32" rx="8" ry="8" fill="#232342"/>
+<rect x="646" y="108" width="618" height="10" fill="#232342"/>
+<rect x="658" y="94" width="20" height="16" rx="3" ry="3" fill="#9D2BFF"/>
+<text x="668" y="106" font-family="monospace" font-size="11" font-weight="bold" fill="#1A1A2E" text-anchor="middle">2</text>
+<text x="688" y="106" font-family="system-ui" font-size="14" font-weight="bold" fill="#E8E8F0">Rate Limit</text>
+<text x="662" y="144" font-family="system-ui" font-size="12" fill="#8888A0">status</text>
+<text x="782" y="144" font-family="monospace" font-size="12" fill="#8888A0">unlimited</text>
+<text x="662" y="166" font-family="system-ui" font-size="12" fill="#8888A0">global rpm</text>
+<text x="782" y="166" font-family="monospace" font-size="12" fill="#8888A0">-</text>
+<text x="662" y="188" font-family="system-ui" font-size="12" fill="#8888A0">global tpm</text>
+<text x="782" y="188" font-family="monospace" font-size="12" fill="#8888A0">-</text>
+<text x="662" y="210" font-family="system-ui" font-size="12" fill="#8888A0">session rpm</text>
+<text x="782" y="210" font-family="monospace" font-size="12" fill="#8888A0">-</text>
+<text x="662" y="232" font-family="system-ui" font-size="12" fill="#8888A0">session tpm</text>
+<text x="782" y="232" font-family="monospace" font-size="12" fill="#8888A0">-</text>
+<text x="662" y="254" font-family="system-ui" font-size="12" fill="#8888A0">buckets</text>
+<text x="782" y="254" font-family="monospace" font-size="12" fill="#8888A0">0</text>
+<rect x="662" y="270" width="570" height="12" rx="3" ry="3" fill="#232342" stroke="#3D3D5C" stroke-width="1"/>
+<rect x="662" y="270" width="0" height="12" rx="3" ry="3" fill="#8888A0"/>
+<rect x="16" y="322" width="618" height="224" rx="8" ry="8" fill="#1A1A2E" stroke="#3D3D5C" stroke-width="1"/>
+<rect x="16" y="322" width="618" height="32" rx="8" ry="8" fill="#232342"/>
+<rect x="16" y="344" width="618" height="10" fill="#232342"/>
+<rect x="28" y="330" width="20" height="16" rx="3" ry="3" fill="#9D2BFF"/>
+<text x="38" y="342" font-family="monospace" font-size="11" font-weight="bold" fill="#1A1A2E" text-anchor="middle">3</text>
+<text x="58" y="342" font-family="system-ui" font-size="14" font-weight="bold" fill="#E8E8F0">Sessions</text>
+<text x="32" y="380" font-family="system-ui" font-size="12" fill="#8888A0">total</text>
+<text x="142" y="380" font-family="monospace" font-size="12" fill="#22C6FF" font-weight="bold">0</text>
+<text x="32" y="408" font-family="system-ui" font-size="12" fill="#8888A0" font-style="italic">no active sessions</text>
+<rect x="646" y="322" width="618" height="224" rx="8" ry="8" fill="#1A1A2E" stroke="#3D3D5C" stroke-width="1"/>
+<rect x="646" y="322" width="618" height="32" rx="8" ry="8" fill="#232342"/>
+<rect x="646" y="344" width="618" height="10" fill="#232342"/>
+<rect x="658" y="330" width="20" height="16" rx="3" ry="3" fill="#9D2BFF"/>
+<text x="668" y="342" font-family="monospace" font-size="11" font-weight="bold" fill="#1A1A2E" text-anchor="middle">4</text>
+<text x="688" y="342" font-family="system-ui" font-size="14" font-weight="bold" fill="#E8E8F0">Usage (total)</text>
+<text x="662" y="380" font-family="system-ui" font-size="12" fill="#8888A0">records</text>
+<text x="772" y="380" font-family="monospace" font-size="12" fill="#E8E8F0">0</text>
+<text x="662" y="402" font-family="system-ui" font-size="12" fill="#8888A0">prompt</text>
+<text x="772" y="402" font-family="monospace" font-size="12" fill="#E8E8F0">0 tok</text>
+<text x="662" y="424" font-family="system-ui" font-size="12" fill="#8888A0">completion</text>
+<text x="772" y="424" font-family="monospace" font-size="12" fill="#E8E8F0">0 tok</text>
+<text x="662" y="446" font-family="system-ui" font-size="12" fill="#8888A0">cost</text>
+<text x="772" y="446" font-family="monospace" font-size="12" fill="#E8E8F0">$0.0000</text>
+<rect x="16" y="558" width="618" height="224" rx="8" ry="8" fill="#1A1A2E" stroke="#3D3D5C" stroke-width="1"/>
+<rect x="16" y="558" width="618" height="32" rx="8" ry="8" fill="#232342"/>
+<rect x="16" y="580" width="618" height="10" fill="#232342"/>
+<rect x="28" y="566" width="20" height="16" rx="3" ry="3" fill="#9D2BFF"/>
+<text x="38" y="578" font-family="monospace" font-size="11" font-weight="bold" fill="#1A1A2E" text-anchor="middle">5</text>
+<text x="58" y="578" font-family="system-ui" font-size="14" font-weight="bold" fill="#E8E8F0">Agent Tools</text>
+<text x="32" y="616" font-family="system-ui" font-size="12" fill="#8888A0">registered: 5</text>
+<rect x="32" y="638" width="8" height="8" rx="1" ry="1" fill="#22C6FF"/>
+<text x="48" y="646" font-family="monospace" font-size="11" fill="#E8E8F0">obsidian_append_note</text>
+<rect x="32" y="656" width="8" height="8" rx="1" ry="1" fill="#22C6FF"/>
+<text x="48" y="664" font-family="monospace" font-size="11" fill="#E8E8F0">obsidian_list_notes</text>
+<rect x="32" y="674" width="8" height="8" rx="1" ry="1" fill="#22C6FF"/>
+<text x="48" y="682" font-family="monospace" font-size="11" fill="#E8E8F0">obsidian_read_note</text>
+<rect x="32" y="692" width="8" height="8" rx="1" ry="1" fill="#22C6FF"/>
+<text x="48" y="700" font-family="monospace" font-size="11" fill="#E8E8F0">obsidian_search_notes</text>
+<rect x="32" y="710" width="8" height="8" rx="1" ry="1" fill="#22C6FF"/>
+<text x="48" y="718" font-family="monospace" font-size="11" fill="#E8E8F0">obsidian_write_note</text>
+<rect x="646" y="558" width="618" height="224" rx="8" ry="8" fill="#1A1A2E" stroke="#3D3D5C" stroke-width="1"/>
+<rect x="646" y="558" width="618" height="32" rx="8" ry="8" fill="#232342"/>
+<rect x="646" y="580" width="618" height="10" fill="#232342"/>
+<rect x="658" y="566" width="20" height="16" rx="3" ry="3" fill="#9D2BFF"/>
+<text x="668" y="578" font-family="monospace" font-size="11" font-weight="bold" fill="#1A1A2E" text-anchor="middle">6</text>
+<text x="688" y="578" font-family="system-ui" font-size="14" font-weight="bold" fill="#E8E8F0">Swarm Agents</text>
+<text x="662" y="616" font-family="system-ui" font-size="12" fill="#8888A0">swarm agents: 4</text>
+<rect x="662" y="634" width="60" height="24" rx="12" ry="12" fill="#9D2BFF" opacity="0.85"/>
+<text x="692" y="650" font-family="system-ui" font-size="12" font-weight="bold" fill="#1A1A2E" text-anchor="middle">coder</text>
+<rect x="730" y="634" width="68" height="24" rx="12" ry="12" fill="#9D2BFF" opacity="0.85"/>
+<text x="764" y="650" font-family="system-ui" font-size="12" font-weight="bold" fill="#1A1A2E" text-anchor="middle">critic</text>
+<rect x="806" y="634" width="100" height="24" rx="12" ry="12" fill="#9D2BFF" opacity="0.85"/>
+<text x="856" y="650" font-family="system-ui" font-size="12" font-weight="bold" fill="#1A1A2E" text-anchor="middle">researcher</text>
+<rect x="914" y="634" width="68" height="24" rx="12" ry="12" fill="#9D2BFF" opacity="0.85"/>
+<text x="948" y="650" font-family="system-ui" font-size="12" font-weight="bold" fill="#1A1A2E" text-anchor="middle">writer</text>
+</svg>

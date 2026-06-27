@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 380" width="1280" height="380" font-family="system-ui, -apple-system, Segoe UI, sans-serif">
+<rect x="0" y="0" width="1280" height="380" fill="#0F0F1E"/>
+<rect x="0" y="0" width="1280" height="70" fill="#1A1A2E"/>
+<rect x="0" y="68" width="1280" height="2" fill="#9D2BFF"/>
+<polygon points="30.0,51.0 16.1,43.0 16.1,27.0 30.0,19.0 43.9,27.0 43.9,43.0" fill="#9D2BFF" stroke="#22C6FF" stroke-width="1.5"/>
+<text x="62" y="41" font-size="22" font-weight="bold" fill="#E8E8F0">FullADDMAX-mcp</text>
+<text x="240" y="41" font-family="monospace" font-size="14" fill="#22C6FF">v0.3.0</text>
+<text x="1264" y="31" font-family="monospace" font-size="12" fill="#8888A0" text-anchor="end">2026-06-27 22:10:07</text>
+<text x="1264" y="49" font-family="monospace" font-size="12" fill="#8888A0" text-anchor="end">uptime 0m</text>
+<rect x="1044" y="23" width="80" height="24" rx="12" ry="12" fill="#50E3A4"/>
+<circle cx="1058" cy="35" r="4" fill="#1A1A2E"/>
+<text x="1068" y="39" font-size="12" font-weight="bold" fill="#1A1A2E">healthy</text>
+<rect x="16" y="86" width="408" height="278" rx="8" ry="8" fill="#1A1A2E" stroke="#3D3D5C" stroke-width="1"/>
+<rect x="16" y="86" width="408" height="32" rx="8" ry="8" fill="#232342"/>
+<rect x="16" y="108" width="408" height="10" fill="#232342"/>
+<rect x="28" y="94" width="20" height="16" rx="3" ry="3" fill="#9D2BFF"/>
+<text x="38" y="106" font-family="monospace" font-size="11" font-weight="bold" fill="#1A1A2E" text-anchor="middle">1</text>
+<text x="58" y="106" font-family="system-ui" font-size="14" font-weight="bold" fill="#E8E8F0">Server</text>
+<text x="32" y="144" font-family="system-ui" font-size="12" fill="#8888A0">version</text><text x="142" y="144" font-family="monospace" font-size="12" fill="#E8E8F0">0.3.0</text>
+<text x="32" y="166" font-family="system-ui" font-size="12" fill="#8888A0">uptime</text><text x="142" y="166" font-family="monospace" font-size="12" fill="#E8E8F0">0m</text>
+<text x="32" y="188" font-family="system-ui" font-size="12" fill="#8888A0">mcp servers</text><text x="142" y="188" font-family="monospace" font-size="12" fill="#22C6FF">4</text>
+<rect x="436" y="86" width="408" height="278" rx="8" ry="8" fill="#1A1A2E" stroke="#3D3D5C" stroke-width="1"/>
+<rect x="436" y="86" width="408" height="32" rx="8" ry="8" fill="#232342"/>
+<rect x="436" y="108" width="408" height="10" fill="#232342"/>
+<rect x="448" y="94" width="20" height="16" rx="3" ry="3" fill="#9D2BFF"/>
+<text x="458" y="106" font-family="monospace" font-size="11" font-weight="bold" fill="#1A1A2E" text-anchor="middle">2</text>
+<text x="478" y="106" font-family="system-ui" font-size="14" font-weight="bold" fill="#E8E8F0">LLM</text>
+<text x="452" y="144" font-family="system-ui" font-size="12" fill="#8888A0">model</text>
+<text x="562" y="144" font-family="monospace" font-size="12" fill="#E8E8F0">claude-sonnet-4-5</text>
+<text x="452" y="166" font-family="system-ui" font-size="12" fill="#8888A0">base_url</text>
+<text x="562" y="166" font-family="monospace" font-size="12" fill="#E8E8F0">https://api.anthropic.com/v1</text>
+<text x="452" y="188" font-family="system-ui" font-size="12" fill="#8888A0">api_key</text>
+<text x="562" y="188" font-family="monospace" font-size="12" fill="#50E3A4">inherited from Claude Desktop</text>
+<text x="452" y="210" font-family="system-ui" font-size="12" fill="#8888A0">timeout</text>
+<text x="562" y="210" font-family="monospace" font-size="12" fill="#E8E8F0">60.0s</text>
+<text x="452" y="232" font-family="system-ui" font-size="12" fill="#8888A0">max_retries</text>
+<text x="562" y="232" font-family="monospace" font-size="12" fill="#E8E8F0">2</text>
+<text x="452" y="248" font-family="system-ui" font-size="11" fill="#8888A0" font-style="italic">host-LLM: Claude Desktop</text>
+<rect x="856" y="86" width="408" height="278" rx="8" ry="8" fill="#1A1A2E" stroke="#3D3D5C" stroke-width="1"/>
+<rect x="856" y="86" width="408" height="32" rx="8" ry="8" fill="#232342"/>
+<rect x="856" y="108" width="408" height="10" fill="#232342"/>
+<rect x="868" y="94" width="20" height="16" rx="3" ry="3" fill="#9D2BFF"/>
+<text x="878" y="106" font-family="monospace" font-size="11" font-weight="bold" fill="#1A1A2E" text-anchor="middle">3</text>
+<text x="898" y="106" font-family="system-ui" font-size="14" font-weight="bold" fill="#E8E8F0">Agent Tools</text>
+<text x="872" y="144" font-family="system-ui" font-size="12" fill="#8888A0">total ops: <tspan fill="#22C6FF" font-weight="bold">31</tspan></text>
+<rect x="872" y="170" width="8" height="8" rx="1" ry="1" fill="#22C6FF"/>
+<text x="888" y="178" font-family="monospace" font-size="13" fill="#E8E8F0" font-weight="bold">admin</text>
+<text x="1232" y="178" font-family="monospace" font-size="12" fill="#22C6FF" text-anchor="end">9 ops</text>
+<rect x="872" y="192" width="8" height="8" rx="1" ry="1" fill="#22C6FF"/>
+<text x="888" y="200" font-family="monospace" font-size="13" fill="#E8E8F0" font-weight="bold">agent</text>
+<text x="1232" y="200" font-family="monospace" font-size="12" fill="#22C6FF" text-anchor="end">7 ops</text>
+<rect x="872" y="214" width="8" height="8" rx="1" ry="1" fill="#22C6FF"/>
+<text x="888" y="222" font-family="monospace" font-size="13" fill="#E8E8F0" font-weight="bold">config</text>
+<text x="1232" y="222" font-family="monospace" font-size="12" fill="#22C6FF" text-anchor="end">10 ops</text>
+<rect x="872" y="236" width="8" height="8" rx="1" ry="1" fill="#22C6FF"/>
+<text x="888" y="244" font-family="monospace" font-size="13" fill="#E8E8F0" font-weight="bold">knowledge</text>
+<text x="1232" y="244" font-family="monospace" font-size="12" fill="#22C6FF" text-anchor="end">5 ops</text>
+</svg>

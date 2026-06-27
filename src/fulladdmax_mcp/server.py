@@ -1,13 +1,23 @@
 """FastMCP server entry point for FullADDMAX-mcp.
 
-Exposes six tools over the MCP stdio transport:
+Exposes **4 mega tools** over the MCP stdio / streamable-http transport:
 
-    * ``ping``                    - health check
-    * ``configure_llm``          - set the OpenAI-compatible endpoint
-    * ``orchestrator_run``       - Orchestrator-Workers workflow
-    * ``parallel_agents_run``    - bounded parallel agent fan-out
-    * ``map_reduce_run``         - sharded Map-Reduce pipeline
-    * ``swarm_run``              - lightweight agent handoffs
+    * ``agent``     — multi-agent workflows (orchestrator / parallel / map_reduce / swarm)
+    * ``knowledge`` — Obsidian vault read / write
+    * ``config``    — runtime configuration & registry mutations
+    * ``admin``     — read-only / status queries
+
+Each mega tool accepts three top-level arguments::
+
+    operation    : str   # one of the names listed in the tool's docstring
+    params_json  : str   # JSON-encoded business parameters ({} for none)
+    session_id   : str   # optional, top-level session for context isolation
+
+The 28 business functions are still importable from this module
+(``from fulladdmax_mcp.server import ping, configure_llm, ...``) so
+the existing 200+ white-box tests continue to pass without
+modification.  They are no longer exposed as MCP tools, however —
+callers must use the mega tool form.
 
 Run with::
 
@@ -19,24 +29,50 @@ Run with::
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import sys
 from typing import Literal
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import FastMCP
 
-from . import __version__
-from . import context as ctx_mod
-from . import mapreduce, obsidian, orchestrator, parallel, rate_limit, swarm, usage
-from .errors import FullADDMAXError
-from .llm import LLMConfig, get_config, set_config
-from .tools import (
-    DEFAULT_EXCLUDE,
-    ToolRegistry,
-    openai_tool_specs,
-    registry as tool_registry,
-    register_tool,
-)
+from . import __version__, server_internal as _si
+from .dispatcher import dispatch
+from .handlers import admin as _admin_h
+from .handlers import agent as _agent_h
+from .handlers import config as _config_h
+from .handlers import knowledge as _knowledge_h
+
+# Make the 28 internal functions available as module-level names
+# (backward-compat for tests / direct import).
+ping = _si.ping
+configure_llm = _si.configure_llm
+list_agent_tools = _si.list_agent_tools
+unregister_agent_tool = _si.unregister_agent_tool
+obsidian_list_notes = _si.obsidian_list_notes
+obsidian_read_note = _si.obsidian_read_note
+obsidian_search_notes = _si.obsidian_search_notes
+obsidian_write_note = _si.obsidian_write_note
+obsidian_append_note = _si.obsidian_append_note
+configure_context_store = _si.configure_context_store
+list_sessions = _si.list_sessions
+get_session = _si.get_session
+delete_session = _si.delete_session
+purge_expired_sessions = _si.purge_expired_sessions
+configure_rate_limit = _si.configure_rate_limit
+reset_rate_limit = _si.reset_rate_limit
+get_rate_limit_status = _si.get_rate_limit_status
+get_usage_stats = _si.get_usage_stats
+list_usage_records = _si.list_usage_records
+reset_usage_stats = _si.reset_usage_stats
+configure_pricing_override = _si.configure_pricing_override
+register_swarm_agent = _si.register_swarm_agent
+unregister_swarm_agent = _si.unregister_swarm_agent
+list_swarm_agents = _si.list_swarm_agents
+orchestrator_run = _si.orchestrator_run
+parallel_agents_run = _si.parallel_agents_run
+map_reduce_run = _si.map_reduce_run
+swarm_run = _si.swarm_run
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,899 +84,228 @@ mcp = FastMCP(
     name="FullADDMAX-mcp",
     instructions=(
         "FullADDMAX-mcp: a multi-agent orchestration MCP server. "
-        "Provides four workflows: orchestrator_run (planner + parallel workers + synthesizer), "
-        "parallel_agents_run (bounded fan-out, max 10 concurrent), "
-        "map_reduce_run (sharded processing), and swarm_run (agent handoffs with shared history). "
-        "Always call configure_llm(base_url, api_key, model) first to set credentials. "
-        "Call ping() to verify the server is healthy and to inspect the current config."
+        "Exposes four mega tools — agent, knowledge, config, admin — "
+        "each with an `operation` and `params_json` argument. "
+        "Always call config(operation='configure_llm', params_json='{...}') first to set credentials. "
+        "Call admin(operation='ping', params_json='') to verify the server is healthy."
     ),
 )
 
 
 # ---------------------------------------------------------------------------
-# Configuration / health
+# Mega tool registrations
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
-def ping() -> str:
-    """Health check. Returns the server version and the current LLM config (with the API key redacted)."""
-    cfg = get_config()
-    return (
-        f"FullADDMAX-mcp v{__version__} OK\n"
-        f"base_url  : {cfg.base_url}\n"
-        f"model     : {cfg.model}\n"
-        f"api_key   : {(cfg.api_key[:4] + '****') if cfg.api_key else '(unset)'}\n"
-        f"timeout   : {cfg.timeout}s\n"
-        f"retries   : {cfg.max_retries}"
+async def _call(handlers, operation: str, params_json: str, session_id: str) -> str:
+    """Tiny helper that wraps the dispatcher and forwards the top-level session_id."""
+    return await dispatch(
+        handlers.HANDLERS,
+        operation,
+        params_json,
+        session_id=session_id,
     )
 
 
 @mcp.tool()
-def configure_llm(
-    base_url: str,
-    api_key: str,
-    model: str = "gpt-4o-mini",
-    temperature: float = 0.7,
-    max_tokens: int = 2048,
-    timeout: float = 60.0,
-    max_retries: int = 2,
-) -> str:
-    """Configure the LLM endpoint used by every workflow.
+async def agent(operation: str, params_json: str = "", session_id: str = "") -> str:
+    """Multi-agent workflows: orchestrator / parallel / map_reduce / swarm.
 
-    Call this once before using any other workflow tool. Subsequent calls
-    replace the current configuration.
+    Operations
+    ----------
+    orchestrator_run
+        Planner + parallel workers + synthesizer.
+        params: ``{"task": str, "num_workers"?: int=3, "timeout"?: float=300, "tools"?: list[str]}``
+        Example::
 
-    Args:
-        base_url: OpenAI-compatible base URL, e.g. ``https://api.openai.com/v1``,
-            ``https://openrouter.ai/api/v1``, ``https://api.deepseek.com/v1``,
-            or a local ``http://localhost:11434/v1`` for Ollama.
-        api_key: API key for the endpoint.
-        model: Model name (e.g. ``gpt-4o-mini``, ``deepseek-chat``,
-            ``qwen2.5-72b-instruct``).
-        temperature: Sampling temperature (0-2).
-        max_tokens: Maximum tokens per LLM response.
-        timeout: Per-request timeout in seconds.
-        max_retries: Number of retries on transient failures (5xx / network).
+            agent(operation="orchestrator_run",
+                  params_json='{"task": "Write 3 haiku about autumn", "num_workers": 3}')
+
+    parallel_agents_run
+        Bounded parallel fan-out (max 10 concurrent).
+        params: ``{"tasks": list[str], "max_concurrent"?: int=10, "timeout"?: float=300, "tools"?: list[str]}``
+
+    map_reduce_run
+        Sharded processing: map each item, then reduce.
+        params: ``{"items": list[str], "map_prompt"?: str, "reduce_prompt"?: str, "max_concurrent"?: int=10, "timeout"?: float=600, "tools"?: list[str]}``
+
+    swarm_run
+        Lightweight agent handoffs with shared history.
+        params: ``{"initial_agent": str, "task": str, "max_handoffs"?: int=8, "timeout"?: float=300, "tools"?: list[str], "agents_json"?: str}``
+        ``agents_json`` is a JSON array string of {name, system, description}.
+
+    auto_workflow
+        Heuristic router: pick the best of the four workflows above
+        from the task wording.  params: ``{"task": str, "prefer"?: str,
+        "tools"?: list[str], "items"?: list[str]}``
+
+    delegate  *recommended for parallel efficiency*
+        AI-driven self-spawning of sub-agents.  Hand the framework a
+        task and it will heuristically split it into independent
+        sub-tasks and run them in parallel.  Use this whenever you see
+        a multi-part request that can be parallelised::
+
+            # instead of one big agent doing 5 things sequentially,
+            # call delegate to let the framework split and parallelise
+            agent(operation="delegate",
+                  params_json='{"task": "Compare Python, Rust and Go for CLI tools"}')
+
+        params: ``{"task": str, "children"?: list[str], "max_depth"?: int=2,
+        "max_parallel"?: int=5, "split"?: str="auto", "tools"?: list[str]}``
+        * ``children`` — pre-defined sub-tasks (skip the heuristic).
+        * ``max_depth`` — recursion cap so sub-agents can themselves
+          call ``delegate``.  Default 2.
+        * ``split`` — ``"auto"`` (default), ``"always"`` (force split),
+          or ``"never"`` (single agent).
+
+    hive_run  *三省六部 + 蜂巢 — full multi-ministry cascade, no hard cap*
+        Fan out N "ministries" in parallel, all attacking the same
+        task from different angles, then re-fan with the critic's
+        feedback so every ministry can refine.  Designed for the
+        "3+ independent sub-tasks, no limit" use case::
+
+            agent(operation="hive_run",
+                  params_json='{"task": "Design a global payment system"}')
+            # → spawns 吏/户/礼/兵/刑/工 ministries in wave 1
+            # → 刑部 (Justice) critic output feeds back to all
+            # → wave 2: every ministry refines its answer
+            # → 12 sub-agents fired in <1 second
+
+        params: ``{"task": str, "departments"?: list[str], "waves"?: int=2,
+        "max_subagents"?: int=200, "max_depth"?: int|null, "tools"?: list[str]}``
+        * ``departments`` — custom minister names.  Default = the
+          six classical ministries (吏/户/礼/兵/刑/工).
+        * ``waves`` — number of waves (wave 1 = initial fan-out,
+          wave 2+ = critic-refined refinement).  Default 2, hard
+          ceiling **20** (passing above raises ValueError — no
+          silent truncation).
+        * ``max_subagents`` — hard safety cap (default 200) on total
+          sub-agents fired across all waves.  When hit, the current
+          wave is skipped and the run collapses to the synthesiser.
+        * ``max_depth`` — recursion cap for nested ``hive_run`` calls
+          (default ``null`` = uncapped).  When the LLM tries to call
+          ``hive_run`` inside ``hive_run`` and the running depth
+          would exceed ``max_depth``, the nested call is downgraded
+          to a single ``parallel_agents_run`` so the cascade can't
+          loop forever.
+
+    Notes
+    -----
+    Set ``session_id`` to bind the run to a specific context-store
+    session; leave empty for a fresh short-lived session.
+
+    Performance tip
+    ---------------
+    When a user request contains 3+ independent parts (e.g. "research
+    A, B, and C"), call ``delegate`` instead of doing them one-by-one.
+    The framework spawns up to ``max_parallel`` concurrent sub-agents
+    and synthesises the result.
+
+    For the "go wide AND deep" case (3+ perspectives on a single
+    complex task), call ``hive_run`` — six ministries attack from
+    different angles simultaneously, then refine.  No cap on the
+    number of sub-agents, only on the budget.
     """
-    if not base_url or not base_url.strip():
-        return "ERROR: base_url is required."
-    if not api_key or not api_key.strip():
-        return "ERROR: api_key is required."
-
-    set_config(
-        LLMConfig(
-            base_url=base_url.rstrip("/"),
-            api_key=api_key,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=timeout,
-            max_retries=max_retries,
-        )
-    )
-    log.info("LLM configured: %s", get_config().masked())
-    return f"Configured: model={model} base_url={base_url.rstrip('/')}"
-
-
-# ---------------------------------------------------------------------------
-# Tool registry
-# ---------------------------------------------------------------------------
+    return await _call(_agent_h, operation, params_json, session_id)
 
 
 @mcp.tool()
-def list_agent_tools() -> str:
-    """List the tools currently registered for agent function-calling.
+async def knowledge(operation: str, params_json: str = "", session_id: str = "") -> str:
+    """Obsidian vault read / write.
 
-    The agent workflows (orchestrator_run, parallel_agents_run, etc.) can
-    optionally pass these tools to the LLM so it can call them mid-loop.
-    Built-in orchestration tools (orchestrator_run, parallel_agents_run,
-    map_reduce_run, swarm_run, ping, configure_llm) are excluded by default
-    to prevent self-recursion.
+    Operations
+    ----------
+    obsidian_list_notes
+        params: ``{"vault_path": str, "folder"?: str="", "limit"?: int=500}``
+    obsidian_read_note
+        params: ``{"vault_path": str, "path": str}``
+    obsidian_search_notes
+        params: ``{"vault_path": str, "keyword": str, "folder"?: str="", "case_sensitive"?: bool=false, "limit"?: int=50}``
+    obsidian_write_note
+        params: ``{"vault_path": str, "path": str, "body": str, "frontmatter_json"?: str="", "overwrite"?: bool=false}``
+    obsidian_append_note
+        params: ``{"vault_path": str, "path": str, "content": str}``
 
-    Returns a Markdown report, one ``- name`` bullet per tool, plus a
-    JSON block of the OpenAI tool specs that are actually sent to the LLM.
+    Example::
+
+        knowledge(operation="obsidian_list_notes",
+                  params_json='{"vault_path": "D:/notes"}')
     """
-    if not tool_registry.names():
-        return (
-            "No agent tools registered. Use `register_tool` to add one, "
-            "or import fulladdmax_mcp.tools in your own MCP server."
-        )
-    lines = ["Registered agent tools:", ""]
-    for name in tool_registry.names():
-        reg = tool_registry.get(name)
-        assert reg is not None
-        lines.append(f"- **{name}** — {reg.description or '(no description)'}")
-    lines.append("")
-    lines.append("OpenAI specs (excluded: " + ", ".join(sorted(DEFAULT_EXCLUDE)) + "):")
-    lines.append("```json")
-    import json as _json
-
-    lines.append(_json.dumps(openai_tool_specs(), indent=2, ensure_ascii=False))
-    lines.append("```")
-    return "\n".join(lines)
+    return await _call(_knowledge_h, operation, params_json, session_id)
 
 
 @mcp.tool()
-def unregister_agent_tool(name: str) -> str:
-    """Unregister a previously registered agent tool by name.
+async def config(operation: str, params_json: str = "", session_id: str = "") -> str:
+    """Runtime configuration & registry mutations (write side).
 
-    No-op (and returns 'skipped') if the tool was not registered.
+    Operations
+    ----------
+    configure_llm
+        params: ``{"base_url": str, "api_key": str, "model"?: str="gpt-4o-mini", "temperature"?: float=0.7, "max_tokens"?: int=2048, "timeout"?: float=60, "max_retries"?: int=2}``
+    configure_context_store
+        params: ``{"backend"?: str="memory"|"sqlite", "sqlite_path"?: str, "ttl_seconds"?: float}``
+    configure_rate_limit
+        params: ``{"global_rpm"?: int, "global_tpm"?: int, "per_session_rpm"?: int, "per_session_tpm"?: int, "default_estimated_tokens"?: int}``
+    configure_pricing_override
+        params: ``{"model": str, "prompt_per_million": float, "completion_per_million": float}``
+    register_swarm_agent
+        params: ``{"name": str, "system": str, "description"?: str, "overwrite"?: bool}``
+    unregister_swarm_agent
+        params: ``{"name": str}``
+    unregister_agent_tool
+        params: ``{"name": str}``
+    reset_rate_limit
+        params: ``{}``
+    reset_usage_stats
+        params: ``{}``
+    purge_expired_sessions
+        params: ``{"ttl_seconds"?: float=0}``
+
+    Example::
+
+        config(operation="configure_llm",
+               params_json='{"base_url": "https://api.openai.com/v1", "api_key": "sk-...",
+                             "model": "gpt-4o-mini"}')
     """
-    if tool_registry.unregister(name):
-        return f"Unregistered: {name}"
-    return f"skipped: {name!r} is not registered"
-
-
-# ---------------------------------------------------------------------------
-# Obsidian vault integration
-# ---------------------------------------------------------------------------
+    return await _call(_config_h, operation, params_json, session_id)
 
 
 @mcp.tool()
-def obsidian_list_notes(vault_path: str, folder: str = "", limit: int = 500) -> str:
-    """List all ``.md`` notes in an Obsidian vault (or a subfolder).
+async def admin(operation: str, params_json: str = "", session_id: str = "") -> str:
+    """Read-only / status queries.
 
-    Each tool takes ``vault_path`` as a parameter so one server can
-    serve many vaults in the same session. Paths are validated against
-    the vault root to prevent directory traversal.
+    Operations
+    ----------
+    ping
+        params: ``{}``
+    list_sessions
+        params: ``{}``
+    get_session
+        params: ``{"session_id": str}``
+    delete_session
+        params: ``{"session_id": str}``
+    list_agent_tools
+        params: ``{}``
+    list_swarm_agents
+        params: ``{}``
+    get_rate_limit_status
+        params: ``{}``
+    get_usage_stats
+        params: ``{"session_id"?: str, "model"?: str, "since_ts"?: float}``
+    list_usage_records
+        params: ``{"session_id"?: str, "model"?: str, "since_ts"?: float, "limit"?: int=50}``
+
+    Note: the top-level ``session_id`` argument is the *caller's*
+    session (used for context isolation); the ``session_id`` inside
+    ``params_json`` is the *target* session to look up / delete.
+
+    Example::
+
+        admin(operation="ping", params_json="")
+        admin(operation="get_session",
+              params_json='{"session_id": "abc123def456"}')
     """
-    try:
-        return obsidian.list_notes_tool(vault_path, folder=folder, limit=limit)
-    except FullADDMAXError as e:
-        return f"ERROR: {type(e).__name__}: {e}"
-
-
-@mcp.tool()
-def obsidian_read_note(vault_path: str, path: str) -> str:
-    """Read a single note from an Obsidian vault.
-
-    Returns a Markdown report with the frontmatter block and the body.
-    """
-    try:
-        return obsidian.read_note_tool(vault_path, path)
-    except FullADDMAXError as e:
-        return f"ERROR: {type(e).__name__}: {e}"
-
-
-@mcp.tool()
-def obsidian_search_notes(
-    vault_path: str,
-    keyword: str,
-    folder: str = "",
-    case_sensitive: bool = False,
-    limit: int = 50,
-) -> str:
-    """Search for ``keyword`` across note bodies and frontmatter.
-
-    Returns a Markdown list of ``path — snippet`` lines. Search is
-    case-insensitive by default.
-    """
-    try:
-        return obsidian.search_notes_tool(
-            vault_path,
-            keyword,
-            folder=folder,
-            case_sensitive=case_sensitive,
-            limit=limit,
-        )
-    except FullADDMAXError as e:
-        return f"ERROR: {type(e).__name__}: {e}"
-
-
-@mcp.tool()
-def obsidian_write_note(
-    vault_path: str,
-    path: str,
-    body: str,
-    frontmatter_json: str = "",
-    overwrite: bool = False,
-) -> str:
-    """Create or overwrite a note in an Obsidian vault.
-
-    ``frontmatter_json`` is a JSON object string (e.g.
-    ``'{"tags": ["work"], "status": "draft"}'``). Leave empty to skip
-    the frontmatter block. Fails if the note exists and ``overwrite``
-    is False.
-    """
-    try:
-        return obsidian.write_note_tool(
-            vault_path, path, body, frontmatter_json, overwrite=overwrite
-        )
-    except FullADDMAXError as e:
-        return f"ERROR: {type(e).__name__}: {e}"
-
-
-@mcp.tool()
-def obsidian_append_note(vault_path: str, path: str, content: str) -> str:
-    """Append text to a note's body, creating the note if needed.
-
-    Useful for incrementally building daily notes, research trails, or
-    agent run logs. Existing frontmatter is preserved.
-    """
-    try:
-        return obsidian.append_note_tool(vault_path, path, content)
-    except FullADDMAXError as e:
-        return f"ERROR: {type(e).__name__}: {e}"
-
-
-# Also expose the same five functions to the agent function-calling
-# registry so workers can read / search / write Obsidian notes while
-# executing a workflow. The path-traversal guard lives in :class:`Vault`.
-register_tool(obsidian.list_notes_tool, name="obsidian_list_notes")
-register_tool(obsidian.read_note_tool, name="obsidian_read_note")
-register_tool(obsidian.search_notes_tool, name="obsidian_search_notes")
-register_tool(obsidian.write_note_tool, name="obsidian_write_note")
-register_tool(obsidian.append_note_tool, name="obsidian_append_note")
-
-
-# ---------------------------------------------------------------------------
-# Persistent context store
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-def configure_context_store(
-    backend: str = "memory",
-    sqlite_path: str = "",
-    ttl_seconds: float = 7 * 24 * 3600,
-) -> str:
-    """Switch the persistent context store.
-
-    Args:
-        backend: ``"memory"`` (default, in-process, lost on restart) or
-            ``"sqlite"`` (single-file, survives restarts).
-        sqlite_path: Required when ``backend="sqlite"``; path to the
-            database file (created on first use).
-        ttl_seconds: Session lifetime in seconds. Sessions whose
-            ``last_access`` is older than this are purged on the next
-            call to :func:`purge_expired_sessions`. Default 7 days.
-    """
-    try:
-        if backend == "memory":
-            store = ctx_mod.use_memory_store(ttl_seconds=ttl_seconds)
-            return f"Configured MemoryContextStore (ttl={ttl_seconds}s)"
-        if backend == "sqlite":
-            if not sqlite_path:
-                return "ERROR: sqlite_path is required when backend='sqlite'"
-            store = ctx_mod.use_sqlite_store(sqlite_path, ttl_seconds=ttl_seconds)
-            return f"Configured SqliteContextStore at {sqlite_path} (ttl={ttl_seconds}s)"
-        return f"ERROR: unknown backend {backend!r} (use 'memory' or 'sqlite')"
-    except Exception as e:  # noqa: BLE001
-        return f"ERROR: {type(e).__name__}: {e}"
-
-
-@mcp.tool()
-def list_sessions() -> str:
-    """List every session currently in the store.
-
-    Returns a Markdown report with id, age (seconds), and number of
-    keys, plus a JSON block. The first row is the most recently
-    accessed.
-    """
-    info = ctx_mod.store().list_sessions()
-    if not info:
-        return "No sessions in store."
-    import json as _json
-    import time as _time
-
-    now = _time.time()
-    lines = [f"Sessions ({len(info)}):", ""]
-    lines.append("| session_id | keys | last_access | age |")
-    lines.append("|------------|------|-------------|-----|")
-    for s in info:
-        age = int(now - s.last_access)
-        lines.append(f"| `{s.session_id}` | {s.size} | {int(s.last_access)} | {age}s |")
-    lines.append("")
-    lines.append("```json")
-    lines.append(
-        _json.dumps(
-            [
-                {
-                    "session_id": s.session_id,
-                    "size": s.size,
-                    "created_at": s.created_at,
-                    "last_access": s.last_access,
-                }
-                for s in info
-            ],
-            indent=2,
-        )
-    )
-    lines.append("```")
-    return "\n".join(lines)
-
-
-@mcp.tool()
-def get_session(session_id: str) -> str:
-    """Return the full payload of a session as JSON.
-
-    Use this to inspect what a previous workflow run wrote to the
-    store. ``session_id`` is the 12-char hex id returned by the
-    workflow tool.
-    """
-    try:
-        snap = ctx_mod.store().snapshot(session_id)
-    except Exception as e:  # noqa: BLE001
-        return f"ERROR: {type(e).__name__}: {e}"
-    import json as _json
-
-    return _json.dumps(snap, ensure_ascii=False, indent=2, default=str)
-
-
-@mcp.tool()
-def delete_session(session_id: str) -> str:
-    """Delete a session and all of its keys.
-
-    No-op (returns ``"skipped"``) if the session does not exist.
-    """
-    if ctx_mod.store().delete(session_id):
-        return f"deleted: {session_id}"
-    return f"skipped: {session_id!r} not in store"
-
-
-@mcp.tool()
-def purge_expired_sessions(ttl_seconds: float = 0) -> str:
-    """Remove all sessions whose ``last_access`` is older than
-    ``ttl_seconds`` (default: use the store's configured TTL).
-
-    Returns ``"purged: N"`` where N is the number removed.
-    """
-    try:
-        if ttl_seconds <= 0:
-            count = ctx_mod.store().purge_expired()
-        else:
-            count = ctx_mod.store().purge_expired(ttl_seconds=ttl_seconds)
-    except Exception as e:  # noqa: BLE001
-        return f"ERROR: {type(e).__name__}: {e}"
-    return f"purged: {count} session(s)"
-
-
-# ---------------------------------------------------------------------------
-# Token usage + rate limiting
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-def configure_rate_limit(
-    global_rpm: int = 0,
-    global_tpm: int = 0,
-    per_session_rpm: int = 0,
-    per_session_tpm: int = 0,
-    default_estimated_tokens: int = 1024,
-) -> str:
-    """Configure the token-bucket rate limiter.
-
-    All four limits are 0 (unlimited) by default. Set a value to
-    enable the corresponding bucket. The global bucket covers every
-    LLM call; the per-session bucket prevents one session from
-    monopolising the global budget. Bursts are allowed up to 10% of
-    the per-minute rate (minimum 1).
-
-    Args:
-        global_rpm: Global requests per minute (0 = unlimited).
-        global_tpm: Global tokens per minute (0 = unlimited).
-        per_session_rpm: Per-session requests per minute.
-        per_session_tpm: Per-session tokens per minute.
-        default_estimated_tokens: Fallback estimated token cost
-            when the caller did not specify max_tokens (default 1024).
-    """
-    try:
-        rate_limit.configure(
-            global_rpm=global_rpm,
-            global_tpm=global_tpm,
-            per_session_rpm=per_session_rpm,
-            per_session_tpm=per_session_tpm,
-            default_estimated_tokens=default_estimated_tokens,
-        )
-    except Exception as e:  # noqa: BLE001
-        return f"ERROR: {type(e).__name__}: {e}"
-    return (
-        f"Configured rate limit: global {global_rpm}r/{global_tpm}t per-min, "
-        f"per-session {per_session_rpm}r/{per_session_tpm}t per-min "
-        f"(est={default_estimated_tokens})"
-    )
-
-
-@mcp.tool()
-def reset_rate_limit() -> str:
-    """Reset the rate limiter to unlimited."""
-    rate_limit.reset()
-    return "Rate limit reset to unlimited."
-
-
-@mcp.tool()
-def get_rate_limit_status() -> str:
-    """Return the current rate-limit configuration and bucket state.
-
-    Output is Markdown summary + JSON block of the limiter's
-    internal :func:`rate_limit.RateLimiter.snapshot`.
-    """
-    import json as _json
-
-    snap = rate_limit.get_limiter().snapshot()
-    cfg = snap["config"]
-    lines = [
-        f"Rate limit **{'enabled' if cfg['enabled'] else 'unlimited'}**:",
-        "",
-        f"- global_rpm: {cfg['global_rpm']}",
-        f"- global_tpm: {cfg['global_tpm']}",
-        f"- per_session_rpm: {cfg['per_session_rpm']}",
-        f"- per_session_tpm: {cfg['per_session_tpm']}",
-        f"- default_estimated_tokens: {cfg['default_estimated_tokens']}",
-        f"- active per-session buckets: {snap['per_session_count']}",
-        "",
-        "```json",
-        _json.dumps(snap, indent=2, default=str),
-        "```",
-    ]
-    return "\n".join(lines)
-
-
-@mcp.tool()
-def get_usage_stats(
-    session_id: str = "",
-    model: str = "",
-    since_ts: float = 0.0,
-) -> str:
-    """Aggregate token usage and cost, optionally filtered.
-
-    Args:
-        session_id: If non-empty, restrict to a single session.
-        model: If non-empty, restrict to a single model.
-        since_ts: If > 0, only count records with ``ts >= since_ts``.
-
-    Returns a Markdown report + JSON block with totals, per-model
-    breakdown, and per-session breakdown.
-    """
-    import json as _json
-
-    summary = usage.store().summary(
-        session_id=session_id or None,
-        model=model or None,
-        since_ts=since_ts or None,
-    )
-    d = summary.to_dict()
-    lines = [
-        "Token usage summary:",
-        "",
-        f"- records: {d['records']}",
-        f"- prompt_tokens: {d['prompt_tokens']}",
-        f"- completion_tokens: {d['completion_tokens']}",
-        f"- total_tokens: {d['total_tokens']}",
-        f"- cost_usd: ${d['cost_usd']:.6f}",
-        "",
-        "By model:",
-        "",
-        "| model | records | prompt | completion | total | cost_usd |",
-        "|-------|---------|--------|------------|-------|----------|",
-    ]
-    for m, s in d["by_model"].items():
-        lines.append(
-            f"| `{m}` | {s['records']} | {s['prompt_tokens']} | "
-            f"{s['completion_tokens']} | {s['total_tokens']} | "
-            f"${s['cost_usd']:.6f} |"
-        )
-    if d["by_session"]:
-        lines.append("")
-        lines.append("By session:")
-        lines.append("")
-        lines.append(
-            "| session_id | records | prompt | completion | total | cost_usd |"
-        )
-        lines.append(
-            "|------------|---------|--------|------------|-------|----------|"
-        )
-        for s, sd in d["by_session"].items():
-            lines.append(
-                f"| `{s}` | {sd['records']} | {sd['prompt_tokens']} | "
-                f"{sd['completion_tokens']} | {sd['total_tokens']} | "
-                f"${sd['cost_usd']:.6f} |"
-            )
-    lines.append("")
-    lines.append("```json")
-    lines.append(_json.dumps(d, indent=2))
-    lines.append("```")
-    return "\n".join(lines)
-
-
-@mcp.tool()
-def list_usage_records(
-    session_id: str = "",
-    model: str = "",
-    since_ts: float = 0.0,
-    limit: int = 50,
-) -> str:
-    """List individual usage records, newest first.
-
-    Args:
-        session_id: Optional filter.
-        model: Optional filter.
-        since_ts: Optional filter (``ts >= since_ts``).
-        limit: Max records to return (default 50, max 1000).
-    """
-    import json as _json
-
-    limit = max(1, min(limit, 1000))
-    records = usage.store().list(
-        session_id=session_id or None,
-        model=model or None,
-        since_ts=since_ts or None,
-        limit=limit,
-    )
-    if not records:
-        return "No usage records."
-    lines = [
-        f"Last {len(records)} usage record(s):",
-        "",
-        "| ts | session | model | prompt | completion | total | cost_usd |",
-        "|----|---------|-------|--------|------------|-------|----------|",
-    ]
-    for r in records:
-        lines.append(
-            f"| {r.ts:.0f} | `{r.session_id}` | `{r.model}` | "
-            f"{r.prompt_tokens} | {r.completion_tokens} | {r.total_tokens} | "
-            f"${r.cost_usd:.6f} |"
-        )
-    lines.append("")
-    lines.append("```json")
-    lines.append(
-        _json.dumps(
-            [
-                {
-                    "ts": r.ts,
-                    "session_id": r.session_id,
-                    "model": r.model,
-                    "prompt_tokens": r.prompt_tokens,
-                    "completion_tokens": r.completion_tokens,
-                    "total_tokens": r.total_tokens,
-                    "cost_usd": r.cost_usd,
-                }
-                for r in records
-            ],
-            indent=2,
-        )
-    )
-    lines.append("```")
-    return "\n".join(lines)
-
-
-@mcp.tool()
-def reset_usage_stats() -> str:
-    """Delete all stored usage records. The pricing table is preserved."""
-    usage.store().clear()
-    return "Usage records cleared."
-
-
-@mcp.tool()
-def configure_pricing_override(
-    model: str,
-    prompt_per_million: float,
-    completion_per_million: float,
-) -> str:
-    """Override or add a model's pricing (USD per 1M tokens).
-
-    Affects cost calculations for *future* records only. Existing
-    records keep their original cost. Useful when you have an
-    enterprise contract with custom rates, or your model is not in
-    the built-in :data:`~fulladdmax_mcp.usage.MODEL_PRICING` table.
-
-    Args:
-        model: Model name to register (case-insensitive lookup).
-        prompt_per_million: USD per 1M prompt tokens.
-        completion_per_million: USD per 1M completion tokens.
-    """
-    if prompt_per_million < 0 or completion_per_million < 0:
-        return "ERROR: prices must be >= 0"
-    p = usage.ModelPricing(
-        model=model,
-        prompt_per_million=prompt_per_million,
-        completion_per_million=completion_per_million,
-    )
-    usage.store().set_pricing(model, p)
-    return (
-        f"Pricing for {model!r}: ${prompt_per_million}/1M prompt, "
-        f"${completion_per_million}/1M completion"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Dynamic Swarm agent registry
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-def register_swarm_agent(
-    name: str,
-    system: str,
-    description: str = "",
-    overwrite: bool = False,
-) -> str:
-    """Register a custom Swarm agent profile.
-
-    The four built-in profiles (``researcher`` / ``coder`` / ``critic`` /
-    ``writer``) are pre-seeded. This tool lets you add new ones (e.g.
-    a ``legal-reviewer``) or override built-ins (pass ``overwrite=True``).
-
-    Once registered, the agent is available in every subsequent
-    :func:`swarm_run` call by name. Use :func:`unregister_swarm_agent`
-    to remove it.
-
-    Args:
-        name: Short identifier used in the LLM's ``{"next": <name>}``
-            handoff envelope.
-        system: System prompt for the agent. Must include the
-            ``"Always reply with JSON {next, message}"`` instruction.
-        description: One-line description shown to the LLM in the
-            agent roster.
-        overwrite: If False (default), the call fails when ``name``
-            already exists. Pass True to replace.
-    """
-    try:
-        swarm.register_swarm_agent(
-            name=name, system=system, description=description, overwrite=overwrite
-        )
-    except FullADDMAXError as e:
-        return f"ERROR: {type(e).__name__}: {e}"
-    action = "updated" if overwrite and name in swarm.registry else "registered"
-    return f"{action}: {name} (total: {len(swarm.registry)} agent(s))"
-
-
-@mcp.tool()
-def unregister_swarm_agent(name: str) -> str:
-    """Remove a Swarm agent profile from the module-level registry.
-
-    No-op (returns ``"skipped"``) if the name is not registered.
-    Built-in profiles can be removed too; they will not reappear
-    unless the process is restarted.
-    """
-    if swarm.unregister_swarm_agent(name):
-        return f"unregistered: {name} (remaining: {len(swarm.registry)} agent(s))"
-    return f"skipped: {name!r} is not registered"
-
-
-@mcp.tool()
-def list_swarm_agents() -> str:
-    """List every Swarm agent currently registered, with a JSON
-    block of the same data for machine-readable access.
-
-    The output is a Markdown report. The first four entries are the
-    built-in profiles; anything after that was added via
-    :func:`register_swarm_agent`.
-    """
-    agents = swarm.list_swarm_agents()
-    if not agents:
-        return "No swarm agents registered. Call register_swarm_agent to add one."
-    import json as _json
-
-    lines = [f"Registered swarm agents ({len(agents)}):", ""]
-    for a in agents:
-        lines.append(f"- **{a.name}** — {a.description or '(no description)'}")
-    lines.append("")
-    lines.append("```json")
-    lines.append(
-        _json.dumps(
-            [
-                {"name": a.name, "system": a.system, "description": a.description}
-                for a in agents
-            ],
-            indent=2,
-            ensure_ascii=False,
-        )
-    )
-    lines.append("```")
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Workflows
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-async def orchestrator_run(
-    task: str,
-    num_workers: int = 3,
-    timeout: float = 300.0,
-    tools: list[str] | None = None,
-    session_id: str = "",
-    ctx: Context | None = None,
-) -> str:
-    """Orchestrator-Workers: a planner agent decomposes ``task`` into
-    ``num_workers`` self-contained subtasks, workers run them in parallel,
-    and a synthesizer merges the results.
-
-    Args:
-        task: The high-level task to accomplish.
-        num_workers: Number of parallel workers (1-10, default 3).
-        timeout: Overall timeout in seconds.
-        tools: Optional whitelist of agent tool names the workers may
-            call. ``None`` (default) = every registered tool. ``[]`` =
-            disable tool-calling entirely. See ``list_agent_tools``.
-        session_id: Optional session id to bind before running. If
-            provided, the workflow reads / writes to that session in
-            the persistent context store. If empty, a fresh
-            short-lived session is created (same as before).
-    """
-    if session_id:
-        try:
-            ctx_mod.bind(session_id)
-        except Exception as e:  # noqa: BLE001
-            return f"ERROR: invalid session_id {session_id!r}: {e}"
-    if ctx is not None:
-        await ctx.info(
-            f"orchestrator_run start: workers={num_workers} session_id={ctx_mod.session_id()}"
-        )
-    try:
-        return await orchestrator.run(
-            task, num_workers=num_workers, timeout=timeout, tools=tools
-        )
-    except FullADDMAXError as e:
-        return f"ERROR: {type(e).__name__}: {e}"
-
-
-@mcp.tool()
-async def parallel_agents_run(
-    tasks: list[str],
-    max_concurrent: int = 10,
-    timeout: float = 300.0,
-    tools: list[str] | None = None,
-    session_id: str = "",
-) -> str:
-    """Run multiple independent tasks in parallel (max 10 concurrent).
-
-    Each task gets the same shared session context. A single failure is
-    recorded as ``## Task #N (ERROR)`` but does not abort the batch.
-
-    Args:
-        tasks: List of independent task prompts (1-10 entries).
-        max_concurrent: Concurrency cap (1-10).
-        timeout: Overall timeout in seconds.
-        tools: Optional whitelist of tool names each task may call.
-            ``None`` (default) = every registered tool. ``[]`` = no
-            tool-calling. See ``list_agent_tools``.
-        session_id: Optional session id to bind before running. See
-            :func:`orchestrator_run` for details.
-    """
-    if session_id:
-        try:
-            ctx_mod.bind(session_id)
-        except Exception as e:  # noqa: BLE001
-            return f"ERROR: invalid session_id {session_id!r}: {e}"
-    try:
-        return await parallel.run(
-            tasks, max_concurrent=max_concurrent, timeout=timeout, tools=tools
-        )
-    except FullADDMAXError as e:
-        return f"ERROR: {type(e).__name__}: {e}"
-
-
-@mcp.tool()
-async def map_reduce_run(
-    items: list[str],
-    map_prompt: str = "",
-    reduce_prompt: str = "",
-    max_concurrent: int = 10,
-    timeout: float = 600.0,
-    tools: list[str] | None = None,
-    session_id: str = "",
-) -> str:
-    """Map-Reduce: process ``items`` in parallel (map), then merge (reduce).
-
-    ``map_prompt`` must contain the placeholder ``{item}``; the current item
-    is substituted in. ``reduce_prompt`` must contain ``{results}``; the
-    merged map outputs are substituted in. Both default to a generic prompt
-    that works for most text-sharding tasks.
-
-    Args:
-        items: List of input items to process.
-        map_prompt: Template containing ``{item}``.
-        reduce_prompt: Template containing ``{results}``.
-        max_concurrent: Map-phase concurrency (1-10).
-        timeout: Overall timeout in seconds.
-        tools: Optional whitelist of tool names the map / reduce phases
-            may call. ``None`` (default) = every registered tool. ``[]``
-            = no tool-calling.
-        session_id: Optional session id to bind before running. See
-            :func:`orchestrator_run` for details.
-    """
-    if session_id:
-        try:
-            ctx_mod.bind(session_id)
-        except Exception as e:  # noqa: BLE001
-            return f"ERROR: invalid session_id {session_id!r}: {e}"
-    try:
-        return await mapreduce.run(
-            items,
-            map_prompt=map_prompt or mapreduce.DEFAULT_MAP,
-            reduce_prompt=reduce_prompt or mapreduce.DEFAULT_REDUCE,
-            max_concurrent=max_concurrent,
-            timeout=timeout,
-            tools=tools,
-        )
-    except FullADDMAXError as e:
-        return f"ERROR: {type(e).__name__}: {e}"
-
-
-@mcp.tool()
-async def swarm_run(
-    initial_agent: str,
-    task: str,
-    max_handoffs: int = 8,
-    timeout: float = 300.0,
-    tools: list[str] | None = None,
-    agents_json: str = "",
-    session_id: str = "",
-) -> str:
-    """Swarm multi-agent collaboration with lightweight handoffs.
-
-    Starts at ``initial_agent`` (one of ``researcher`` / ``coder`` / ``critic``
-    / ``writer`` by default, or any agent you have registered with
-    :func:`register_swarm_agent`). Each agent replies with strict JSON
-    ``{"next": <agent_name|DONE>, "message": <string>}``; the
-    orchestrator routes the message to the next agent until the LLM
-    emits ``DONE`` or ``max_handoffs`` is reached.
-
-    Args:
-        initial_agent: Starting agent name.
-        task: The user task to accomplish.
-        max_handoffs: Maximum agent-to-agent handoffs (default 8).
-        timeout: Overall timeout in seconds.
-        tools: Optional whitelist of tool names each agent may call.
-            ``None`` (default) = every registered tool. ``[]`` = no
-            tool-calling.
-        agents_json: Optional JSON array of additional / replacement
-            agent profiles to use for this call only. Schema::
-
-                [
-                  {"name": "reviewer", "system": "...", "description": "..."}
-                ]
-
-            If provided, the call's agent set is built from
-            ``agents_json`` (overrides the module-level registry for
-            this call). If empty, the module-level registry is used.
-        session_id: Optional session id to bind before running. See
-            :func:`orchestrator_run` for details.
-    """
-    if session_id:
-        try:
-            ctx_mod.bind(session_id)
-        except Exception as e:  # noqa: BLE001
-            return f"ERROR: invalid session_id {session_id!r}: {e}"
-    agents: dict[str, swarm.Agent] | None = None
-    if agents_json.strip():
-        try:
-            agents = swarm.parse_agents_json(agents_json)
-        except FullADDMAXError as e:
-            return f"ERROR: {type(e).__name__}: {e}"
-
-    # Resolve the effective agent set so the log matches what
-    # swarm.run() will actually use (parse_agents_json above builds a
-    # fresh dict; otherwise we fall back to the module-level registry).
-    effective_agents = (
-        agents if agents is not None else swarm.registry.snapshot()
-    )
-    log.info(
-        "swarm_run: initial_agent=%r task=%r max_handoffs=%d "
-        "agents_json=%s effective_agents=%s",
-        initial_agent,
-        task,
-        max_handoffs,
-        repr(agents_json) if agents_json else "<empty -> use registry>",
-        sorted(effective_agents),
-    )
-
-    try:
-        return await swarm.run(
-            initial_agent,
-            task,
-            max_handoffs=max_handoffs,
-            timeout=timeout,
-            tools=tools,
-            agents=agents,
-        )
-    except FullADDMAXError as e:
-        return f"ERROR: {type(e).__name__}: {e}"
+    return await _call(_admin_h, operation, params_json, session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -993,6 +358,60 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
         help="Python logging level (default: INFO).",
     )
+    parser.add_argument(
+        "panel",
+        nargs="?",
+        default=None,
+        help=(
+            "If set to 'panel', dispatch into the SVG dashboard generator. "
+            "Use 'fulladdmax-mcp panel --help' for sub-options."
+        ),
+    )
+    return parser
+
+
+def _build_panel_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="fulladdmax-mcp panel",
+        description=(
+            "Render a static SVG dashboard of the server state. "
+            "Collects data by invoking the 4 mega tools in-process."
+        ),
+    )
+    parser.add_argument(
+        "--out",
+        default="docs/panel.svg",
+        help="Output SVG path (default: docs/panel.svg).",
+    )
+    parser.add_argument(
+        "--theme",
+        default="dark",
+        choices=("dark", "light", "paper"),
+        help="Colour theme (default: dark).",
+    )
+    parser.add_argument(
+        "--lang",
+        default="en",
+        choices=("en", "zh"),
+        help="UI language: 'en' (English) or 'zh' (Chinese).",
+    )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Serve the SVG over HTTP with auto-refresh instead of writing a static file.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port for --serve (default: 8765).",
+    )
+    parser.add_argument(
+        "--refresh",
+        type=int,
+        default=5,
+        help="Refresh interval in seconds for --serve (default: 5).",
+    )
     return parser
 
 
@@ -1016,8 +435,51 @@ def main(argv: list[str] | None = None) -> None:
         fulladdmax-mcp --transport streamable-http  # HTTP on 127.0.0.1:8000
         fulladdmax-mcp --transport http --host 0.0.0.0 --port 9000
     """
+    # If the first positional is 'panel', skip the outer parser and go
+    # straight into the panel subparser — this way flags like --out and
+    # --theme don't collide with the outer (transport) parser.
+    raw_argv = argv if argv is not None else sys.argv[1:]
+    if raw_argv and raw_argv[0] == "panel":
+        from . import panel as _panel_mod
+
+        panel_args = _build_panel_arg_parser().parse_args(raw_argv[1:])
+        asyncio.run(
+            _panel_mod.run(
+                out=panel_args.out,
+                theme=panel_args.theme,
+                lang=panel_args.lang,
+                serve=panel_args.serve,
+                port=panel_args.port,
+                refresh=panel_args.refresh,
+            )
+        )
+        return
+
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
+
+    # Subcommand dispatch: 'fulladdmax-mcp panel ...'
+    if args.panel == "panel":
+        # Lazy import to avoid a circular import (panel imports `mcp`
+        # from this module).
+        from . import panel as _panel_mod
+
+        # Re-parse argv minus the 'panel' positional, but keep the rest
+        # of the original argv intact (handles both `fulladdmax-mcp panel`
+        # and `python -m fulladdmax_mcp panel`).
+        remaining = [a for a in (argv or sys.argv[1:]) if a != "panel"]
+        panel_args = _build_panel_arg_parser().parse_args(remaining)
+        asyncio.run(
+            _panel_mod.run(
+                out=panel_args.out,
+                theme=panel_args.theme,
+                lang=panel_args.lang,
+                serve=panel_args.serve,
+                port=panel_args.port,
+                refresh=panel_args.refresh,
+            )
+        )
+        return
 
     logging.getLogger().setLevel(args.log_level)
     transport: Transport = _normalize_transport(args.transport)
@@ -1027,7 +489,7 @@ def main(argv: list[str] | None = None) -> None:
         mcp.settings.port = args.port
         log.info(
             "Starting FullADDMAX-mcp v%s on %s://%s:%s (transport=%s, mount=%s)",
-            __version__,
+            _si.__version__ if hasattr(_si, "__version__") else "0.5.0",
             "http",
             args.host,
             args.port,
@@ -1035,7 +497,7 @@ def main(argv: list[str] | None = None) -> None:
             args.mount_path or "(default)",
         )
     else:
-        log.info("Starting FullADDMAX-mcp v%s on stdio", __version__)
+        log.info("Starting FullADDMAX-mcp on stdio")
 
     mcp.run(transport=transport, mount_path=args.mount_path)
 
