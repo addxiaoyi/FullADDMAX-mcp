@@ -2,6 +2,10 @@
 
 > 多 Agent 编排 MCP Server / Multi-agent orchestration MCP server
 
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/addxiaoyi/FullADDMAX-mcp)
+![GitHub stars](https://img.shields.io/github/stars/addxiaoyi/FullADDMAX-mcp?style=social)
+![GitHub last commit](https://img.shields.io/github/last-commit/addxiaoyi/FullADDMAX-mcp)
+
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-stdio-green.svg)]()
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)]()
@@ -10,44 +14,61 @@ FullADDMAX-mcp 把单个 AI Agent 变成一支团队。它通过 [Model Context 
 
 FullADDMAX-mcp turns a single AI agent into a team. It exposes four battle-tested multi-agent workflows over the [Model Context Protocol](https://modelcontextprotocol.io/) (stdio), so any MCP client (Claude Desktop, Cursor, Trae, Continue.dev, ...) can dispatch sub-agents, run parallel research, shard processing, and collaborate with handoffs out of the box.
 
+<p align="center">
+  <img src="docs/panel.svg" alt="FullADDMAX-mcp panel — 3 cards: Server / LLM / Agent Tools" width="100%">
+</p>
+
 ---
 
 ## ✨ 特性 / Features
 
-- **4 种编排模式 / 4 workflows** — Orchestrator-Workers、Parallel Fan-Out、Map-Reduce、Swarm Handoffs
-- **MCP stdio 协议 / MCP stdio transport** — 直接被 Claude Desktop / Cursor / Trae 加载
-- **OpenAI 兼容 LLM / OpenAI-compatible LLM** — 支持 OpenAI、OpenRouter、DeepSeek、Qwen、本地 Ollama、vLLM、LM Studio...
-- **共享会话 Context / Shared session context** — 工具调用之间可传递状态
-- **超时 + 重试 + 并发限流 / Timeout + retry + bounded concurrency** — 防止 LLM 限流和卡死
-- **零外部依赖运行**（除 `mcp` 和 `httpx`）/ No extra runtime deps beyond `mcp` and `httpx`
-- **完整测试 + 4 个可跑示例 / Full test suite + 4 runnable examples**
-- **🎛 一键看板 / One-command panel** — `fulladdmax-mcp panel` 生成纯 SVG 仪表盘（无 emoji），GitHub README 直接嵌入，**中英双语切换**，**3 主题**，**智能识别 host LLM**
+- **4 个 mega tool / 4 mega tools, 31 个 op** — `admin` (9) / `agent` (7) / `config` (10) / `knowledge` (5)
+- **MCP stdio 协议 / MCP stdio transport** — 直接被 Claude Desktop / Cursor / Trae / Continue.dev / Codex 加载
+- **LLM 自动识别 / LLM autodetect** — 扫 env 顺序：`FULLADDMAX_*` → `OPENAI_*` → 宿主注入 (Claude / Cursor / Copilot) → 本地 (Ollama / vLLM / LM Studio)
+- **OpenAI 兼容 LLM / OpenAI-compatible LLM** — 任何 `/v1/chat/completions` 端点，不绑定 provider
+- **零配置离线 stub / Zero-config offline stub** — `FULLADDMAX_AGENT_OFFLINE=1` 时 7 个 agent op 全走 deterministic Markdown 框架，无 LLM、无网络
+- **7 个 agent 工作流 / 7 agent workflows** — orchestrator / parallel / map_reduce / swarm + auto_workflow / delegate / hive_run
+- **共享会话 Context / Shared session context** — 工具调用之间可传递状态 (Memory + SQLite)
+- **超时 + 重试 + 限流 + Token 用量 / Timeout + retry + rate limit + usage tracking** — 防止 LLM 限流和卡死
+- **零额外运行时依赖 / No extra runtime deps** — 只依赖 `mcp` + `httpx`
+- **🎛 一键看板 / One-command panel** — `fulladdmax-mcp panel` 生成单文件 SVG 仪表盘（3 张核心卡，纯 SVG 无 emoji）
 
 ---
 
 ## 🎛 工作面板 / Dashboard
 
-`fulladdmax-mcp` 自带一个**纯 SVG 仪表盘**（无任何 emoji / 图片依赖），随时呼出看当前 server 状态：版本、LLM 配置、限流、session、token 用量、注册的 agent 工具、swarm agent。一行命令生成，可直接放 GitHub README。
+`fulladdmax-mcp` 自带一个**纯 SVG 仪表盘**（无任何 emoji / 图片依赖），随时呼出看当前 server 状态：版本、uptime、LLM 配置（model / base_url / api_key / timeout / retries）、31 个注册 op 分布。一行命令生成单文件 SVG，可直接 `git commit` 进 README。
 
 ```bash
-# 静态 SVG（3 主题 × 2 语言 = 6 组合）
-fulladdmax-mcp panel --out docs/panel-dark-en.svg --theme dark  --lang en
-fulladdmax-mcp panel --out docs/panel-dark-zh.svg --theme dark  --lang zh
-fulladdmax-mcp panel --out docs/panel-light-en.svg --theme light --lang en
-fulladdmax-mcp panel --out docs/panel-light-zh.svg --theme light --lang zh
-fulladdmax-mcp panel --out docs/panel-paper-en.svg --theme paper --lang en
-fulladdmax-mcp panel --out docs/panel-paper-zh.svg --theme paper --lang zh
+# 生成单文件 SVG
+fulladdmax-mcp panel --out docs/panel.svg
 
-# 实时预览（默认每 5 秒刷新；支持切换语言和主题）
-fulladdmax-mcp panel --serve --port 8765 --refresh 5 --lang zh
+# 实时预览（默认每 5 秒刷新）
+fulladdmax-mcp panel --serve --port 8765 --refresh 5
 # → 打开 http://127.0.0.1:8765/panel
 
-# 交互式预览页（点按钮切 3 主题 + 2 语言）
+# 静态预览页（纯展示，零按钮）
 open docs/preview.html        # macOS
 start docs\preview.html       # Windows
 ```
 
-**开箱即用**：即使没配 LLM，server 也能跑 knowledge / config / admin 操作。面板会显示柔和的 `(开箱即用)` 标签，而不是黄色警告。LLM 配置后，4 个 agent 工作流 + auto_workflow 自动可用。
+**3 张核心卡**：
+
+| 卡片 | 字段 | 含义 |
+|------|------|------|
+| **Server** | version · uptime · mcp servers | 健康检查 / 版本号 / 运行时间 |
+| **LLM** | model · base_url · api_key · timeout · retries | 智能三态：真 key / 继承自宿主 / 开箱即用提示 |
+| **Agent Tools** | total ops: 31 | 4 个 mega tool 各自的 op 数 (admin 9 / agent 7 / config 10 / knowledge 5) |
+
+**智能三态**（api_key 字段，缺省不报警）：
+
+| 情况 | api_key 单元格 | 颜色 | 副标题 |
+|------|----------------|------|--------|
+| 配了真 key | `sk-xxxx****`（脱敏）| 白 | — |
+| 配了空 + 检测到宿主 | `inherited from <host>` | 绿 | `host-LLM: <host>` |
+| 配了空 + 裸跑 | `(off-the-shelf)` | 灰 | `set FULLADDMAX_API_KEY to enable agent ops` |
+
+**开箱即用**：没配 LLM 时 server 也能跑 `knowledge` / `config` / `admin`，并显示柔和的"off-the-shelf"标签，不报警。配了 LLM 后 4 个 mega tool 全可用（31 个 op）。
 
 ---
 
@@ -192,62 +213,27 @@ agent(operation="hive_run",
 
 **为什么硬上限不叫"没有数量限制"？**「没有限制」指的是**设计上不阻止 AI 自主扩展**：递归、并发、waves 数都由 LLM 自由决定。但工程上必须给"AI 行为异常 / 用户传错参数"留 3 道安全网，否则 MCP server 会爆。这是负责任的"自由"。
 
-### 主题 × 语言矩阵 / Theme × Language matrix
-
-|             | 英文 `en`               | 中文 `zh`                   |
-|-------------|--------------------------|------------------------------|
-| `dark`     | `panel-dark-en.svg`     | `panel-dark-zh.svg`         |
-| `light`    | `panel-light-en.svg`    | `panel-light-zh.svg`        |
-| `paper`    | `panel-paper-en.svg`    | `panel-paper-zh.svg`        |
-
-**3 个主题用途**：`dark`（GitHub README / 演示截图）、`light`（打印 / 浅色 wiki）、`paper`（复古 archive 风格）
-
 ### 实际效果 / What it looks like
 
-下面这 6 张就是直接 `fulladdmax-mcp panel` 命令生成的 SVG（1280×800 像素、纯 SVG 原始元素 = `rect` / `polygon` / `text` / `circle`，**无 emoji**）：
+直接 `fulladdmax-mcp panel --out docs/panel.svg` 生成的纯 SVG（1280×380 像素、原生 SVG 元素 = `rect` / `polygon` / `text` / `circle`，**无 emoji**、**无外部资源**）：
 
-**英文版：**
-
-| 主题 | 截图 |
-|------|------|
-| dark  | ![dashboard dark en](docs/panel-dark-en.svg) |
-| light | ![dashboard light en](docs/panel-light-en.svg) |
-| paper | ![dashboard paper en](docs/panel-paper-en.svg) |
-
-**中文版：**
-
-| 主题 | 截图 |
-|------|------|
-| dark  | ![dashboard dark zh](docs/panel-dark-zh.svg) |
-| light | ![dashboard light zh](docs/panel-light-zh.svg) |
-| paper | ![dashboard paper zh](docs/panel-paper-zh.svg) |
+![FullADDMAX-mcp panel](docs/panel.svg)
 
 ### 数据怎么来 / Where the data comes from
 
-`panel` 通过**进程内调用 4 个 mega tool** 收集数据 —— 顺带也是 mega tool 链路的冒烟测试：
+`panel` 通过**进程内调用 mega tool** 收集数据 —— 顺带也是 mega tool 链路的冒烟测试：
 
 | 卡片 | mega tool 调用 |
 |------|---------------|
-| LLM 配置 / LLM Config | `admin(operation="ping")` |
-| 限流设置 / Rate Limit | `admin(operation="get_rate_limit_status")` |
-| 会话 / Sessions | `admin(operation="list_sessions")` |
-| Token 用量 / Usage | `admin(operation="get_usage_stats")` |
-| 已注册工具 / Agent Tools | `admin(operation="list_agent_tools")` |
-| Swarm 代理 / Swarm Agents | `admin(operation="list_swarm_agents")` |
+| **Server** | `admin(operation="ping")` (version, uptime) |
+| **LLM** | `admin(operation="ping")` (model, base_url, api_key, timeout, retries) |
+| **Agent Tools** | `admin(operation="list_agent_tools")` (4 mega tool × op 数) |
 
-> 任何 mega tool 报错都会被收集成 `unhealthy` 状态 + 底部红色错误条，但**不会**让 SVG 渲染失败。
+> 任何 mega tool 报错都会被收集成 `unhealthy` 状态 + 健康指示变红，但**不会**让 SVG 渲染失败。
 
 ### 智能识别 host LLM / Smart host LLM detection
 
-如果 `FULLADDMAX_API_KEY` 默认是空的，panel 会**自动扫环境变量**判断 server 是不是被宿主 AI 调起（Claude Desktop / Cursor / Codex / Continue.dev / GitHub Copilot / Cline / Aider / Zed 之一）。扫到就在「api_key」字段显示 `继承自 <宿主>` 并染绿色；如果一个都没扫到就显示 `请配置 FULLADDMAX_API_KEY` 并染黄色：
-
-| 情况 | api_key 单元格显示 | 颜色 | 副标题 |
-|------|---------------------|------|--------|
-| 配了真实 key | `sk-xxxx****`（已脱敏）| 白色 | — |
-| 配了空 + 检测到 Claude Desktop | `继承自 Claude Desktop` | 绿色 | `宿主 LLM: Claude Desktop` |
-| 配了空 + 裸跑 | `(未设置)` | 黄色 | `请配置 FULLADDMAX_API_KEY` |
-
-环境变量识别规则（任一前缀命中即视为命中）：
+如果 `FULLADDMAX_API_KEY` 默认是空的，panel 会**自动扫环境变量**判断 server 是不是被宿主 AI 调起。识别规则（任一前缀命中即视为命中）：
 
 | 宿主 AI | 识别的 env 前缀 |
 |---------|-----------------|
@@ -260,7 +246,9 @@ agent(operation="hive_run",
 | Aider | `AIDER_` |
 | Zed | `ZED_` / `ZED_AGENT_` |
 
-> Trae IDE 自身在 spawn MCP server 时会注入 `CLAUDE_CODE_*` env var，所以 `fulladdmax-mcp panel` 在 Trae 里直接跑就会显示「继承自 Claude Desktop」——你不用自己 export 任何东西。
+扫到就显示 `inherited from <host>`（绿）+ 副标题 `host-LLM: <host>`；扫不到就显示柔和的 `(off-the-shelf)` 灰标签 + 提示 `set FULLADDMAX_API_KEY to enable agent ops` —— **不报警**，因为非 LLM 的 op (`knowledge` / `config` / `admin`) 仍可用。
+
+> Trae IDE 自身在 spawn MCP server 时会注入 `CLAUDE_CODE_*` env var，所以 `fulladdmax-mcp panel` 在 Trae 里直接跑就会显示「inherited from Claude Desktop」——你不用自己 export 任何东西。
 
 ---
 
