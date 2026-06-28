@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "fulladdmax-deepseek": {
+      "command": "uvx",
+      "args": [
+        "fulladdmax-mcp"
+      ],
+      "env": {
+        "DEEPSEEK_API_KEY": "你的-deepseek-key",
+        "DEEPSEEK_MODEL": "deepseek-chat",
+        "FULLADDMAX_LANG": "zh-CN"
+      },
+      "description": "FullADDMAX-mcp · DeepSeek 深度求索"
+    }
+  }
+}

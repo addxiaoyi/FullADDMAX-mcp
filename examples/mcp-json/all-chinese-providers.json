@@ -1,0 +1,78 @@
+{
+  "_comment": "FullADDMAX-mcp · 6 大中国 LLM 的 MCP JSON 模板。挑一段 → 替换 key → 粘到对应主机。",
+  "_docs": "docs/mcp-configs.md",
+  "mcpServers": {
+    "fulladdmax-deepseek": {
+      "command": "uvx",
+      "args": [
+        "fulladdmax-mcp"
+      ],
+      "env": {
+        "DEEPSEEK_API_KEY": "你的-deepseek-key",
+        "DEEPSEEK_MODEL": "deepseek-chat",
+        "FULLADDMAX_LANG": "zh-CN"
+      },
+      "description": "FullADDMAX-mcp · DeepSeek 深度求索"
+    },
+    "fulladdmax-qwen": {
+      "command": "uvx",
+      "args": [
+        "fulladdmax-mcp"
+      ],
+      "env": {
+        "DASHSCOPE_API_KEY": "你的-qwen-key",
+        "QWEN_MODEL": "qwen-plus",
+        "FULLADDMAX_LANG": "zh-CN"
+      },
+      "description": "FullADDMAX-mcp · 通义千问 (DashScope)"
+    },
+    "fulladdmax-glm": {
+      "command": "uvx",
+      "args": [
+        "fulladdmax-mcp"
+      ],
+      "env": {
+        "ZHIPUAI_API_KEY": "你的-glm-key",
+        "GLM_MODEL": "glm-4-plus",
+        "FULLADDMAX_LANG": "zh-CN"
+      },
+      "description": "FullADDMAX-mcp · 智谱 GLM"
+    },
+    "fulladdmax-doubao": {
+      "command": "uvx",
+      "args": [
+        "fulladdmax-mcp"
+      ],
+      "env": {
+        "ARK_API_KEY": "你的-doubao-key",
+        "ARK_MODEL": "doubao-pro-32k",
+        "FULLADDMAX_LANG": "zh-CN"
+      },
+      "description": "FullADDMAX-mcp · 字节豆包 (火山方舟)"
+    },
+    "fulladdmax-kimi": {
+      "command": "uvx",
+      "args": [
+        "fulladdmax-mcp"
+      ],
+      "env": {
+        "MOONSHOT_API_KEY": "你的-kimi-key",
+        "MOONSHOT_MODEL": "moonshot-v1-128k",
+        "FULLADDMAX_LANG": "zh-CN"
+      },
+      "description": "FullADDMAX-mcp · Kimi 月之暗面"
+    },
+    "fulladdmax-yi": {
+      "command": "uvx",
+      "args": [
+        "fulladdmax-mcp"
+      ],
+      "env": {
+        "YI_API_KEY": "你的-yi-key",
+        "YI_MODEL": "yi-large",
+        "FULLADDMAX_LANG": "zh-CN"
+      },
+      "description": "FullADDMAX-mcp · 零一万物 Yi"
+    }
+  }
+}

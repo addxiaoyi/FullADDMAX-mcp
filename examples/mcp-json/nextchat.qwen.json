@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "fulladdmax-qwen": {
+      "command": "uvx",
+      "args": [
+        "fulladdmax-mcp"
+      ],
+      "env": {
+        "DASHSCOPE_API_KEY": "你的-qwen-key",
+        "QWEN_MODEL": "qwen-plus",
+        "FULLADDMAX_LANG": "zh-CN"
+      },
+      "description": "FullADDMAX-mcp · 通义千问 (DashScope)"
+    }
+  }
+}

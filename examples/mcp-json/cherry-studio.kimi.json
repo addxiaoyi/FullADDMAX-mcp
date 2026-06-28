@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "fulladdmax-kimi": {
+      "command": "uvx",
+      "args": [
+        "fulladdmax-mcp"
+      ],
+      "env": {
+        "MOONSHOT_API_KEY": "你的-kimi-key",
+        "MOONSHOT_MODEL": "moonshot-v1-128k",
+        "FULLADDMAX_LANG": "zh-CN"
+      },
+      "description": "FullADDMAX-mcp · Kimi 月之暗面"
+    }
+  }
+}

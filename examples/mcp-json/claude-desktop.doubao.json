@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "fulladdmax-doubao": {
+      "command": "uvx",
+      "args": [
+        "fulladdmax-mcp"
+      ],
+      "env": {
+        "ARK_API_KEY": "你的-doubao-key",
+        "ARK_MODEL": "doubao-pro-32k",
+        "FULLADDMAX_LANG": "zh-CN"
+      },
+      "description": "FullADDMAX-mcp · 字节豆包 (火山方舟)"
+    }
+  }
+}

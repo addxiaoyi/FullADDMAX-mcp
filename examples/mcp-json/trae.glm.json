@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "fulladdmax-glm": {
+      "command": "uvx",
+      "args": [
+        "fulladdmax-mcp"
+      ],
+      "env": {
+        "ZHIPUAI_API_KEY": "你的-glm-key",
+        "GLM_MODEL": "glm-4-plus",
+        "FULLADDMAX_LANG": "zh-CN"
+      },
+      "description": "FullADDMAX-mcp · 智谱 GLM"
+    }
+  }
+}

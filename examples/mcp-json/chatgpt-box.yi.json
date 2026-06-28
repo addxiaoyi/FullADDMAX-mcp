@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "fulladdmax-yi": {
+      "command": "uvx",
+      "args": [
+        "fulladdmax-mcp"
+      ],
+      "env": {
+        "YI_API_KEY": "你的-yi-key",
+        "YI_MODEL": "yi-large",
+        "FULLADDMAX_LANG": "zh-CN"
+      },
+      "description": "FullADDMAX-mcp · 零一万物 Yi"
+    }
+  }
+}
