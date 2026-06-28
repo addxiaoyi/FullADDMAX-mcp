@@ -127,6 +127,8 @@ FULLADDMAX_LOG_FORMAT=json FULLADDMAX_LOG_LEVEL=INFO fulladdmax-mcp
 
 **子 logger 全部走同一个 handler**（无重复输出）：12 个模块用 `getLogger(__name__)` 拿到的 logger（`fulladdmax_mcp.llm` / `fulladdmax_mcp.dispatcher` / ...）经 `propagate=True` 汇到 root 的唯一 handler。`configure_logging()` 幂等，调用 N 次也是单 handler。
 
+**团队开发参考**：完整 env var 列表在 [.env.example](.env.example) — 复制成 `.env`（已 gitignore）后填值即可。包含 5 个 logging 维度 + 4 种 LLM 配置方案 + OFFLINE 开关 + host injection 说明。
+
 ### 实际效果 / What it looks like
 
 直接 `fulladdmax-mcp panel --out docs/panel.svg` 生成的纯 SVG（1280×380 像素、原生 SVG 元素 = `rect` / `polygon` / `text` / `circle`，**无 emoji**、**无外部资源**）：
