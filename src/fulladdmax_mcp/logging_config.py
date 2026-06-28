@@ -40,8 +40,10 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import sys
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterable
 
 # ---------------------------------------------------------------------------
 # Public constants
@@ -66,6 +68,23 @@ ENV_ROTATE_BACKUPS = "FULLADDMAX_LOG_ROTATE_BACKUPS"
 VALID_FORMATS: tuple[str, ...] = ("text", "json")
 #: Valid values for ``--log-level`` (matches Python's level names).
 VALID_LEVELS: tuple[str, ...] = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+# ---------------------------------------------------------------------------
+# init_logging() sentinels for the ``env_file`` argument
+# ---------------------------------------------------------------------------
+
+#: Sentinel: auto-detect a .env file at well-known locations.
+ENV_FILE_AUTO = "auto"
+#: Sentinel: skip .env loading entirely (caller manages env vars itself).
+ENV_FILE_NONE = "none"
+
+#: Default locations tried by ``env_file=ENV_FILE_AUTO`` (in order).
+DEFAULT_ENV_PATHS: tuple[str, ...] = (
+    ".env",
+    "~/.fulladdmax-mcp/.env",
+    "~/.config/fulladdmax-mcp/.env",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -274,9 +293,161 @@ def get_logger(name: str | None = None) -> logging.Logger:
     return logging.getLogger(f"fulladdmax-mcp.{name}")
 
 
+# ---------------------------------------------------------------------------
+# .env file parser + init_logging()
+# ---------------------------------------------------------------------------
+
+#: Regex used by :func:`_parse_env_file`.  Matches both ``KEY=value`` and
+#: ``# KEY=value`` so we can also pick up commented-out examples for
+#: inventory purposes.
+_ENV_LINE_RE = re.compile(
+    r"^\s*#?\s*"                    # optional leading # (commented candidate)
+    r"([A-Z_][A-Z0-9_]*)"           # KEY
+    r"\s*=\s*"
+    r"(.*?)\s*$"                    # VALUE (non-greedy, trailing ws trimmed)
+)
+
+
+def _parse_env_file(path: str | Path) -> dict[str, str]:
+    """Parse a .env file, returning ``{KEY: value}`` for assignable lines.
+
+    Accepts both ``# KEY=value`` (commented) and ``KEY=value`` (active).
+    Lines that are pure comments (no ``=``) are ignored.  Returns
+    ``{}`` if the file doesn't exist.
+    """
+    p = Path(path).expanduser()
+    out: dict[str, str] = {}
+    if not p.exists() or not p.is_file():
+        return out
+    for line in p.read_text(encoding="utf-8").splitlines():
+        m = _ENV_LINE_RE.match(line)
+        if not m:
+            continue
+        key, val = m.group(1), m.group(2)
+        if val:  # only include non-empty values
+            out[key] = val
+    return out
+
+
+def _load_env_files(
+    env_file: str | Path | Iterable[str | Path] | None,
+) -> list[Path]:
+    """Resolve ``env_file`` argument to a list of files actually loaded.
+
+    Rules:
+      * ``ENV_FILE_NONE`` / ``None``  -> load nothing
+      * ``ENV_FILE_AUTO``             -> try :data:`DEFAULT_ENV_PATHS`
+      * a single path string / Path   -> try that one
+      * iterable of paths             -> try each
+
+    Files that don't exist are silently skipped.  Loaded values are
+    written to ``os.environ`` ONLY for keys that are not already set
+    (i.e. an explicit shell env var always wins over .env).
+    """
+    if env_file is None or env_file == ENV_FILE_NONE:
+        return []
+    if env_file == ENV_FILE_AUTO:
+        candidates: Iterable[str | Path] = DEFAULT_ENV_PATHS
+    elif isinstance(env_file, (str, Path)):
+        candidates = [env_file]
+    else:
+        candidates = list(env_file)
+
+    loaded: list[Path] = []
+    for c in candidates:
+        p = Path(c).expanduser()
+        if not (p.exists() and p.is_file()):
+            continue
+        parsed = _parse_env_file(p)
+        for k, v in parsed.items():
+            # Shell env wins over .env: don't overwrite.
+            os.environ.setdefault(k, v)
+        loaded.append(p)
+    return loaded
+
+
+def init_logging(
+    *,
+    level: str | None = None,
+    fmt: str | None = None,
+    file_path: str | None = None,
+    max_bytes: int | None = None,
+    backup_count: int | None = None,
+    env_file: str | Path | Iterable[str | Path] | None = ENV_FILE_AUTO,
+) -> logging.Logger:
+    """One-shot initialization for the FullADDMAX-mcp package logger.
+
+    What it does, in order:
+
+      1. Loads ``.env`` from disk (auto-detected or explicit).  The
+         ``.env`` file only fills in env vars that are NOT already set
+         in the calling shell -- so explicit shell exports always win.
+      2. Calls :func:`configure_logging` with the union of explicit
+         args + ``FULLADDMAX_LOG_*`` env vars + built-in defaults.
+
+    Precedence (highest first):  explicit arg > env var > .env file
+    value > built-in default.  ``.env`` is loaded with
+    ``os.environ.setdefault`` so it can never stomp a more specific
+    value.
+
+    Parameters
+    ----------
+    level, fmt, file_path, max_bytes, backup_count:
+        Same as :func:`configure_logging`.  Pass any of these to
+        override the env-var values for the current process.
+    env_file:
+        ``"auto"`` (default) tries :data:`DEFAULT_ENV_PATHS`.
+        ``"none"`` / ``None`` skips .env loading entirely.
+        A path / Path loads that specific file.
+        An iterable of paths loads each in order (later files do NOT
+        override earlier ones because of ``setdefault``).
+
+    Returns
+    -------
+    The configured ``fulladdmax-mcp`` package logger.
+
+    Examples
+    --------
+    Library use (the common case)::
+
+        from fulladdmax_mcp.logging_config import init_logging
+        log = init_logging()              # auto-loads .env
+        log.info("started", extra={"v": 1})
+
+    CLI override (server entry point)::
+
+        from fulladdmax_mcp.logging_config import init_logging
+        log = init_logging(
+            level=args.log_level,          # CLI wins over .env
+            fmt=args.log_format,
+            file_path=args.log_file,
+            max_bytes=args.log_rotate_max_bytes,
+            backup_count=args.log_rotate_backups,
+            env_file="none",               # don't auto-load; caller chose CLI
+        )
+
+    Tests that need a clean env::
+
+        from fulladdmax_mcp.logging_config import init_logging
+        # explicitly load a fixture file
+        log = init_logging(env_file="tests/fixtures/test.env")
+    """
+    _load_env_files(env_file)
+    return configure_logging(
+        level=level,
+        fmt=fmt,
+        file_path=file_path,
+        max_bytes=max_bytes,
+        backup_count=backup_count,
+    )
+
+
 __all__ = [
     "DEFAULT_TEXT_FORMAT",
     "DEFAULT_JSON_FIELDS",
+    "DEFAULT_ENV_PATHS",
+    "ENV_FILE_AUTO",
+    "ENV_FILE_NONE",
     "ENV_LEVEL",
     "ENV_FORMAT",
     "ENV_FILE",
@@ -287,4 +458,5 @@ __all__ = [
     "JsonFormatter",
     "configure_logging",
     "get_logger",
+    "init_logging",
 ]

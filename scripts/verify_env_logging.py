@@ -31,7 +31,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import sys
 import tempfile
 from pathlib import Path
@@ -41,39 +40,7 @@ _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO / "src"))
 
 from fulladdmax_mcp import logging_config as lc  # noqa: E402
-
-
-# ---------------------------------------------------------------------------
-# .env parser  (5 lines, no python-dotenv dep)
-# ---------------------------------------------------------------------------
-
-_ENV_LINE = re.compile(
-    r"^\s*#?\s*"                    # optional leading # (treat commented as candidate)
-    r"([A-Z_][A-Z0-9_]*)"           # KEY
-    r"\s*=\s*"
-    r"(.*?)\s*$"                    # VALUE
-)
-
-
-def parse_env_file(path: Path) -> dict[str, str]:
-    """Return ``{KEY: value}`` for every assignable line.
-
-    All lines that *look* like ``# KEY = value`` (even if commented) are
-    returned, so the caller can decide whether to apply them.  Blank
-    lines and pure-comment lines (starting with ``#`` and no ``=``) are
-    ignored.
-    """
-    out: dict[str, str] = {}
-    if not path.exists():
-        return out
-    for line in path.read_text(encoding="utf-8").splitlines():
-        m = _ENV_LINE.match(line)
-        if not m:
-            continue
-        key, val = m.group(1), m.group(2)
-        if val:  # only include non-empty values
-            out[key] = val
-    return out
+from fulladdmax_mcp.logging_config import _parse_env_file  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +407,7 @@ def main() -> int:
     print(f"Loading env vars from: {env_path}")
     if not env_path.exists():
         print(f"  (file not found; checks will run with no env vars set)")
-    parsed = parse_env_file(env_path)
+    parsed = _parse_env_file(env_path)
     print(f"Parsed {len(parsed)} env var(s) from {env_path.name}")
     if args.verbose:
         for k in sorted(parsed):

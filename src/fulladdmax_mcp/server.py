@@ -74,8 +74,14 @@ map_reduce_run = _si.map_reduce_run
 swarm_run = _si.swarm_run
 
 from . import logging_config as _logcfg
-_logcfg.configure_logging()  # sensible defaults; CLI flags may re-run this
-log = _logcfg.get_logger()
+# Use init_logging() so all logging config (CLI args + env vars) goes
+# through the same code path that library consumers use.  Pass
+# env_file="none" because the server is a CLI tool, not a library
+# consumer -- the .env auto-load is for `import fulladdmax_mcp; log =
+# init_logging()` style usage, not for `python -m fulladdmax_mcp.server`.
+# Explicit env vars (FULLADDMAX_LOG_*) in the parent shell are still
+# picked up via configure_logging()'s own env-var resolution.
+log = _logcfg.init_logging(env_file="none")
 
 mcp = FastMCP(
     name="FullADDMAX-mcp",
@@ -512,12 +518,13 @@ def main(argv: list[str] | None = None) -> None:
         panel_args = _build_panel_arg_parser().parse_args(raw_argv[1:])
         # Apply log config first so the panel's log.info() output is
         # correctly formatted.
-        _logcfg.configure_logging(
+        _logcfg.init_logging(
             level=panel_args.log_level,
             fmt=panel_args.log_format,
             file_path=panel_args.log_file,
             max_bytes=panel_args.log_rotate_max_bytes,
             backup_count=panel_args.log_rotate_backups,
+            env_file="none",
         )
         asyncio.run(
             _panel_mod.run(
@@ -547,12 +554,13 @@ def main(argv: list[str] | None = None) -> None:
         panel_args = _build_panel_arg_parser().parse_args(remaining)
         # Apply log config first so the panel's log.info() output is
         # correctly formatted.
-        _logcfg.configure_logging(
+        _logcfg.init_logging(
             level=panel_args.log_level,
             fmt=panel_args.log_format,
             file_path=panel_args.log_file,
             max_bytes=panel_args.log_rotate_max_bytes,
             backup_count=panel_args.log_rotate_backups,
+            env_file="none",
         )
         asyncio.run(
             _panel_mod.run(
@@ -566,12 +574,13 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
-    _logcfg.configure_logging(
+    _logcfg.init_logging(
         level=args.log_level,
         fmt=args.log_format,
         file_path=args.log_file,
         max_bytes=args.log_rotate_max_bytes,
         backup_count=args.log_rotate_backups,
+        env_file="none",
     )
     log.info(
         "logging configured: level=%s format=%s file=%s rotate_max_bytes=%s rotate_backups=%s",

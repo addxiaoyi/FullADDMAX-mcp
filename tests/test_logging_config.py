@@ -310,6 +310,198 @@ def test_get_logger_paths() -> None:
 
 
 # ---------------------------------------------------------------------------
+# init_logging() tests
+# ---------------------------------------------------------------------------
+
+
+def _write_env_file(path: Path, lines: list[str]) -> None:
+    """Write a test .env file with UTF-8 (for the emoji comments)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_init_logging_no_args() -> None:
+    _section("init_logging(): no .env, no args -> defaults")
+    _strip_env()
+    # Run from a tempdir so the auto-detect '.env' lookup finds nothing.
+    cwd = tempfile.mkdtemp()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(cwd)
+        pkg = lc.init_logging(env_file="auto")
+        _check(
+            logging.getLogger().level == logging.INFO,
+            "defaults to INFO when no .env / no env / no CLI",
+        )
+        h = _find_handler(logging.getLogger(), logging.StreamHandler)
+        _check(
+            h is not None and not isinstance(h.formatter, lc.JsonFormatter),
+            "defaults to text formatter",
+        )
+    finally:
+        os.chdir(old_cwd)
+
+
+def test_init_logging_explicit_env_file() -> None:
+    _section("init_logging(env_file=<path>) loads that .env")
+    _strip_env()
+    with tempfile.TemporaryDirectory() as tmp:
+        env_path = Path(tmp) / "fixture.env"
+        _write_env_file(env_path, [
+            "FULLADDMAX_LOG_LEVEL=DEBUG",
+            "FULLADDMAX_LOG_FORMAT=json",
+            "# this comment should be skipped",
+        ])
+        pkg = lc.init_logging(env_file=env_path)
+        _check(
+            logging.getLogger().level == logging.DEBUG,
+            "DEBUG applied from .env (explicit path)",
+        )
+        h = _find_handler(logging.getLogger(), logging.StreamHandler)
+        _check(
+            h is not None and isinstance(h.formatter, lc.JsonFormatter),
+            "JsonFormatter applied from .env (explicit path)",
+        )
+
+
+def test_init_logging_env_file_none() -> None:
+    _section("init_logging(env_file='none') skips .env loading")
+    _strip_env()
+    # Drop a .env in cwd to prove it's NOT picked up.
+    cwd = tempfile.mkdtemp()
+    old_cwd = os.getcwd()
+    try:
+        Path(cwd, ".env").write_text(
+            "FULLADDMAX_LOG_LEVEL=DEBUG\n", encoding="utf-8"
+        )
+        os.chdir(cwd)
+        lc.init_logging(env_file="none")
+        _check(
+            logging.getLogger().level == logging.INFO,
+            "level stays INFO when env_file='none' (ignores cwd .env)",
+        )
+    finally:
+        os.chdir(old_cwd)
+
+
+def test_init_logging_cli_over_env() -> None:
+    _section("init_logging(level='ERROR', env_file=...) : CLI > .env")
+    _strip_env()
+    with tempfile.TemporaryDirectory() as tmp:
+        env_path = Path(tmp) / "fixture.env"
+        _write_env_file(env_path, [
+            "FULLADDMAX_LOG_LEVEL=DEBUG",
+            "FULLADDMAX_LOG_FORMAT=text",
+        ])
+        # CLI passes level=ERROR, but .env says DEBUG -> CLI wins.
+        lc.init_logging(level="ERROR", env_file=env_path)
+        _check(
+            logging.getLogger().level == logging.ERROR,
+            "CLI level=ERROR beats .env DEBUG",
+        )
+
+
+def test_init_logging_shell_env_over_dotenv() -> None:
+    _section("init_logging: shell env > .env (setdefault semantics)")
+    _strip_env()
+    with tempfile.TemporaryDirectory() as tmp:
+        env_path = Path(tmp) / "fixture.env"
+        _write_env_file(env_path, [
+            "FULLADDMAX_LOG_LEVEL=DEBUG",
+        ])
+        # Shell pre-sets the var BEFORE init_logging runs (simulating
+        # a teammate who has 'export FULLADDMAX_LOG_LEVEL=ERROR' in
+        # their shell rc).
+        os.environ["FULLADDMAX_LOG_LEVEL"] = "ERROR"
+        try:
+            lc.init_logging(env_file=env_path)
+            _check(
+                logging.getLogger().level == logging.ERROR,
+                "shell-set ERROR wins over .env's DEBUG",
+            )
+        finally:
+            del os.environ["FULLADDMAX_LOG_LEVEL"]
+
+
+def test_init_logging_multiple_files() -> None:
+    _section("init_logging(env_file=[a, b]) tries each in order")
+    _strip_env()
+    with tempfile.TemporaryDirectory() as tmp:
+        a = Path(tmp) / "a.env"
+        b = Path(tmp) / "b.env"
+        _write_env_file(a, ["FULLADDMAX_LOG_LEVEL=DEBUG"])
+        _write_env_file(b, ["FULLADDMAX_LOG_FORMAT=json"])
+        # First file wins for each key (setdefault semantics).
+        lc.init_logging(env_file=[a, b])
+        _check(
+            logging.getLogger().level == logging.DEBUG,
+            "level from a.env applied",
+        )
+        h = _find_handler(logging.getLogger(), logging.StreamHandler)
+        _check(
+            h is not None and isinstance(h.formatter, lc.JsonFormatter),
+            "format from b.env applied",
+        )
+
+
+def test_init_logging_auto_default_paths() -> None:
+    _section("init_logging(env_file='auto') tries DEFAULT_ENV_PATHS")
+    _strip_env()
+    cwd = tempfile.mkdtemp()
+    old_cwd = os.getcwd()
+    try:
+        # Drop a .env in cwd (the first DEFAULT_ENV_PATHS entry).
+        Path(cwd, ".env").write_text(
+            "FULLADDMAX_LOG_LEVEL=DEBUG\n", encoding="utf-8"
+        )
+        os.chdir(cwd)
+        lc.init_logging(env_file="auto")
+        _check(
+            logging.getLogger().level == logging.DEBUG,
+            "auto-detected cwd ./.env applied",
+        )
+    finally:
+        os.chdir(old_cwd)
+
+
+def test_init_logging_returns_package_logger() -> None:
+    _section("init_logging() return value")
+    _strip_env()
+    with tempfile.TemporaryDirectory() as tmp:
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp)
+            pkg = lc.init_logging(env_file="none")
+            _check(
+                isinstance(pkg, logging.Logger),
+                "return value is a logging.Logger",
+            )
+            _check(
+                pkg.name == "fulladdmax-mcp",
+                "return value is the fulladdmax-mcp package logger",
+            )
+        finally:
+            os.chdir(old_cwd)
+
+
+def test_init_logging_idempotent() -> None:
+    _section("init_logging() idempotency (no handler stacking)")
+    _strip_env()
+    with tempfile.TemporaryDirectory() as tmp:
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp)
+            lc.init_logging(env_file="none")
+            n1 = len(logging.getLogger().handlers)
+            lc.init_logging(env_file="none")
+            lc.init_logging(env_file="none")
+            n2 = len(logging.getLogger().handlers)
+            _check(n1 == n2 == 1, f"handler count stable ({n1} -> {n2})")
+        finally:
+            os.chdir(old_cwd)
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
@@ -326,6 +518,15 @@ def main() -> int:
     test_env_var_precedence()
     test_validation()
     test_get_logger_paths()
+    test_init_logging_no_args()
+    test_init_logging_explicit_env_file()
+    test_init_logging_env_file_none()
+    test_init_logging_cli_over_env()
+    test_init_logging_shell_env_over_dotenv()
+    test_init_logging_multiple_files()
+    test_init_logging_auto_default_paths()
+    test_init_logging_returns_package_logger()
+    test_init_logging_idempotent()
 
     print()
     print("=" * 70)

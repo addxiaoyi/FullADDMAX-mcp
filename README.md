@@ -129,6 +129,20 @@ FULLADDMAX_LOG_FORMAT=json FULLADDMAX_LOG_LEVEL=INFO fulladdmax-mcp
 
 **团队开发参考**：完整 env var 列表在 [.env.example](.env.example) — 复制成 `.env`（已 gitignore）后填值即可。包含 5 个 logging 维度 + 4 种 LLM 配置方案 + OFFLINE 开关 + host injection 说明。
 
+**其他模块直接调 `init_logging()` 即可**（无需手动 .env 解析 / logging 配置）：
+
+```python
+# 库用（最常见）
+from fulladdmax_mcp.logging_config import init_logging, get_logger
+
+log = init_logging()                                # 自动加载 cwd .env
+log = init_logging(env_file="/etc/myapp/env")       # 显式指定
+log = init_logging(env_file="none", level="DEBUG")  # 跳过 .env + 调试
+log = init_logging(env_file=[".env.local", ".env"]) # 多文件 (setdefault 语义)
+```
+
+优先级：**CLI arg > shell env > .env 文件 > 内置默认**。`.env` 用 `os.environ.setdefault` 注入，永远不覆盖更具体的值。详见 `init_logging()` docstring。
+
 ### 实际效果 / What it looks like
 
 直接 `fulladdmax-mcp panel --out docs/panel.svg` 生成的纯 SVG（1280×380 像素、原生 SVG 元素 = `rect` / `polygon` / `text` / `circle`，**无 emoji**、**无外部资源**）：
