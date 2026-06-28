@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
 import sys
 from typing import Literal
 
@@ -74,11 +73,9 @@ parallel_agents_run = _si.parallel_agents_run
 map_reduce_run = _si.map_reduce_run
 swarm_run = _si.swarm_run
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
-log = logging.getLogger("fulladdmax-mcp")
+from . import logging_config as _logcfg
+_logcfg.configure_logging()  # sensible defaults; CLI flags may re-run this
+log = _logcfg.get_logger()
 
 mcp = FastMCP(
     name="FullADDMAX-mcp",
@@ -355,8 +352,43 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--log-level",
         default="INFO",
-        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
-        help="Python logging level (default: INFO).",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"),
+        help="Python logging level (default: INFO; also via FULLADDMAX_LOG_LEVEL).",
+    )
+    parser.add_argument(
+        "--log-format",
+        choices=("text", "json"),
+        default=None,
+        help=(
+            "Log record format: 'text' (human) or 'json' (machine, for log "
+            "aggregators). Default: text. Also via FULLADDMAX_LOG_FORMAT."
+        ),
+    )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help=(
+            "Optional file path to write logs to (instead of stderr). "
+            "Also via FULLADDMAX_LOG_FILE."
+        ),
+    )
+    parser.add_argument(
+        "--log-rotate-max-bytes",
+        type=int,
+        default=0,
+        help=(
+            "Rotate --log-file when it exceeds this many bytes. 0 = no rotation. "
+            "Also via FULLADDMAX_LOG_ROTATE_MAX_BYTES."
+        ),
+    )
+    parser.add_argument(
+        "--log-rotate-backups",
+        type=int,
+        default=3,
+        help=(
+            "Number of rotated log files to keep (default 3). "
+            "Also via FULLADDMAX_LOG_ROTATE_BACKUPS."
+        ),
     )
     parser.add_argument(
         "panel",
@@ -412,6 +444,41 @@ def _build_panel_arg_parser() -> argparse.ArgumentParser:
         default=5,
         help="Refresh interval in seconds for --serve (default: 5).",
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"),
+        help="Python logging level (default: INFO; also via FULLADDMAX_LOG_LEVEL).",
+    )
+    parser.add_argument(
+        "--log-format",
+        choices=("text", "json"),
+        default=None,
+        help=(
+            "Log record format: 'text' or 'json'. Default: text. "
+            "Also via FULLADDMAX_LOG_FORMAT."
+        ),
+    )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help=(
+            "Optional file path for logs (instead of stderr). "
+            "Also via FULLADDMAX_LOG_FILE."
+        ),
+    )
+    parser.add_argument(
+        "--log-rotate-max-bytes",
+        type=int,
+        default=0,
+        help="Rotate --log-file at this many bytes. 0 = no rotation.",
+    )
+    parser.add_argument(
+        "--log-rotate-backups",
+        type=int,
+        default=3,
+        help="Rotated log files to keep (default 3).",
+    )
     return parser
 
 
@@ -443,6 +510,15 @@ def main(argv: list[str] | None = None) -> None:
         from . import panel as _panel_mod
 
         panel_args = _build_panel_arg_parser().parse_args(raw_argv[1:])
+        # Apply log config first so the panel's log.info() output is
+        # correctly formatted.
+        _logcfg.configure_logging(
+            level=panel_args.log_level,
+            fmt=panel_args.log_format,
+            file_path=panel_args.log_file,
+            max_bytes=panel_args.log_rotate_max_bytes,
+            backup_count=panel_args.log_rotate_backups,
+        )
         asyncio.run(
             _panel_mod.run(
                 out=panel_args.out,
@@ -469,6 +545,15 @@ def main(argv: list[str] | None = None) -> None:
         # and `python -m fulladdmax_mcp panel`).
         remaining = [a for a in (argv or sys.argv[1:]) if a != "panel"]
         panel_args = _build_panel_arg_parser().parse_args(remaining)
+        # Apply log config first so the panel's log.info() output is
+        # correctly formatted.
+        _logcfg.configure_logging(
+            level=panel_args.log_level,
+            fmt=panel_args.log_format,
+            file_path=panel_args.log_file,
+            max_bytes=panel_args.log_rotate_max_bytes,
+            backup_count=panel_args.log_rotate_backups,
+        )
         asyncio.run(
             _panel_mod.run(
                 out=panel_args.out,
@@ -481,7 +566,21 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
-    logging.getLogger().setLevel(args.log_level)
+    _logcfg.configure_logging(
+        level=args.log_level,
+        fmt=args.log_format,
+        file_path=args.log_file,
+        max_bytes=args.log_rotate_max_bytes,
+        backup_count=args.log_rotate_backups,
+    )
+    log.info(
+        "logging configured: level=%s format=%s file=%s rotate_max_bytes=%s rotate_backups=%s",
+        args.log_level,
+        args.log_format or "text",
+        args.log_file or "<stderr>",
+        args.log_rotate_max_bytes or 0,
+        args.log_rotate_backups,
+    )
     transport: Transport = _normalize_transport(args.transport)
 
     if transport != "stdio":

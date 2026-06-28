@@ -38,6 +38,7 @@ FullADDMAX-mcp turns a single AI agent into a team. It exposes four battle-teste
 - **超时 + 重试 + 限流令牌桶** — 防止 LLM 限流和卡死（global + per-session）
 - **Token 用量追踪** — 全自动记录每次调用的 prompt/completion token + 成本估算
 - **持久化 session context** — Memory + SQLite 后端，跨调用可传递状态
+- **🔍 可配置 logging** — level / format / file / rotation 全部走 CLI flag 或 env var，零额外依赖
 
 #### 📦 Dev
 
@@ -85,6 +86,46 @@ fulladdmax-mcp panel --serve --port 8765 --refresh 5
 open docs/preview.html        # macOS
 start docs\preview.html       # Windows
 ```
+
+### 🔍 可配置 Logging / Configurable logging
+
+5 个维度全部走 CLI flag 或 env var，**CLI 优先**，env var 次之，默认兜底。
+
+| 维度 | CLI flag | env var | 默认 |
+|------|----------|---------|------|
+| Level | `--log-level` | `FULLADDMAX_LOG_LEVEL` | `INFO` |
+| Format | `--log-format text\|json` | `FULLADDMAX_LOG_FORMAT` | `text` |
+| File | `--log-file PATH` | `FULLADDMAX_LOG_FILE` | stderr |
+| Rotate (bytes) | `--log-rotate-max-bytes N` | `FULLADDMAX_LOG_ROTATE_MAX_BYTES` | 0 (不轮转) |
+| Rotate (backups) | `--log-rotate-backups N` | `FULLADDMAX_LOG_ROTATE_BACKUPS` | 3 |
+
+**生产常用组合**：
+
+```bash
+# 开发：人类可读，开 DEBUG
+fulladdmax-mcp --log-level DEBUG
+
+# 生产：JSON 输出给 ELK / Loki / Datadog 解析
+fulladdmax-mcp --log-format json
+
+# 长期运行：写文件 + 自动轮转（10MB × 5 备份）
+fulladdmax-mcp --log-file /var/log/fulladdmax-mcp.log \
+               --log-rotate-max-bytes 10485760 \
+               --log-rotate-backups 5
+
+# 容器化部署：用 env var 注入，Docker/K8s 友好
+FULLADDMAX_LOG_FORMAT=json FULLADDMAX_LOG_LEVEL=INFO fulladdmax-mcp
+```
+
+**JSON 输出样例**（每行一个 record，可直接 jq）：
+
+```json
+{"level":"INFO","logger":"fulladdmax-mcp.llm","message":"LLM configured","timestamp":"2026-06-28T14:00:42+0800","base_url":"https://api.openai.com/v1","model":"gpt-4o-mini"}
+{"level":"WARNING","logger":"fulladdmax-mcp.rate_limit","message":"rate limit reached","timestamp":"2026-06-28T14:00:43+0800","current":105,"limit":100}
+{"level":"ERROR","logger":"fulladdmax-mcp.llm","message":"chat_with_tools reached max_steps","timestamp":"2026-06-28T14:00:44+0800","max_steps":10,"exc_info":"Traceback..."}
+```
+
+**子 logger 全部走同一个 handler**（无重复输出）：12 个模块用 `getLogger(__name__)` 拿到的 logger（`fulladdmax_mcp.llm` / `fulladdmax_mcp.dispatcher` / ...）经 `propagate=True` 汇到 root 的唯一 handler。`configure_logging()` 幂等，调用 N 次也是单 handler。
 
 ### 实际效果 / What it looks like
 
