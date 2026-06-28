@@ -502,6 +502,191 @@ def test_init_logging_idempotent() -> None:
 
 
 # ---------------------------------------------------------------------------
+# init_logging() edge-case tests (env_file=None / [] / exception paths)
+# ---------------------------------------------------------------------------
+
+
+def test_init_logging_env_file_none_literal() -> None:
+    _section("init_logging(env_file=None) — None is a valid skip-sentinel")
+    _strip_env()
+    # Drop a .env in cwd to prove it's NOT picked up.
+    cwd = tempfile.mkdtemp()
+    old_cwd = os.getcwd()
+    try:
+        Path(cwd, ".env").write_text(
+            "FULLADDMAX_LOG_LEVEL=DEBUG\n", encoding="utf-8"
+        )
+        os.chdir(cwd)
+        # None should behave identically to "none" (skip .env loading).
+        lc.init_logging(env_file=None)
+        _check(
+            logging.getLogger().level == logging.INFO,
+            "env_file=None -> level stays INFO (skips cwd .env)",
+        )
+    finally:
+        os.chdir(old_cwd)
+
+
+def test_init_logging_env_file_empty_iterables() -> None:
+    _section("init_logging(env_file=[] or ()) — empty iterables are no-ops")
+    _strip_env()
+    cwd = tempfile.mkdtemp()
+    old_cwd = os.getcwd()
+    try:
+        # Drop a .env in cwd to prove neither branch picks it up.
+        Path(cwd, ".env").write_text(
+            "FULLADDMAX_LOG_LEVEL=DEBUG\n", encoding="utf-8"
+        )
+        os.chdir(cwd)
+        lc.init_logging(env_file=[])
+        _check(
+            logging.getLogger().level == logging.INFO,
+            "env_file=[]  -> level stays INFO (no .env loaded)",
+        )
+        lc.init_logging(env_file=())
+        _check(
+            logging.getLogger().level == logging.INFO,
+            "env_file=()  -> level stays INFO (no .env loaded)",
+        )
+        # And no .env-loaded key in os.environ either.
+        _check(
+            "FULLADDMAX_LOG_LEVEL" not in os.environ,
+            "FULLADDMAX_LOG_LEVEL was not injected by empty-iterable call",
+        )
+    finally:
+        os.chdir(old_cwd)
+
+
+def test_init_logging_env_file_nonexistent_single_path() -> None:
+    _section("init_logging(env_file=<missing path>) — silently skipped")
+    _strip_env()
+    with tempfile.TemporaryDirectory() as tmp:
+        ghost = Path(tmp) / "definitely_does_not_exist.env"
+        # Sanity: confirm the file does not exist.
+        _check(not ghost.exists(), "fixture: missing file confirmed absent")
+        # Should NOT raise; should fall through to defaults.
+        try:
+            lc.init_logging(env_file=ghost)
+        except Exception as e:  # noqa: BLE001
+            _fail("init_logging crashed on nonexistent path", repr(e))
+            return
+        _check(
+            logging.getLogger().level == logging.INFO,
+            "missing path -> level stays INFO (no crash, no env var)",
+        )
+        _check(
+            "FULLADDMAX_LOG_LEVEL" not in os.environ,
+            "missing path did not pollute os.environ",
+        )
+
+
+def test_init_logging_env_file_iterable_with_missing_paths() -> None:
+    _section("init_logging(env_file=[existing, missing]) — only existing loaded")
+    _strip_env()
+    with tempfile.TemporaryDirectory() as tmp:
+        real = Path(tmp) / "real.env"
+        ghost1 = Path(tmp) / "ghost1.env"
+        ghost2 = Path(tmp) / "ghost2.env"
+        _write_env_file(real, ["FULLADDMAX_LOG_FORMAT=json"])
+        # Mix: 1 existing + 2 missing in arbitrary order.
+        try:
+            lc.init_logging(env_file=[ghost1, real, ghost2])
+        except Exception as e:  # noqa: BLE001
+            _fail("init_logging crashed on iterable with missing paths", repr(e))
+            return
+        h = _find_handler(logging.getLogger(), logging.StreamHandler)
+        _check(
+            h is not None and isinstance(h.formatter, lc.JsonFormatter),
+            "real.env's JSON format still applied despite 2 missing neighbours",
+        )
+
+
+def test_init_logging_env_file_path_is_directory() -> None:
+    _section("init_logging(env_file=<directory>) — silently skipped, no crash")
+    _strip_env()
+    with tempfile.TemporaryDirectory() as tmp:
+        # tmpdir itself is a directory, not a file.  Should not raise.
+        try:
+            lc.init_logging(env_file=tmp)
+        except Exception as e:  # noqa: BLE001
+            _fail("init_logging crashed on directory path", repr(e))
+            return
+        _check(
+            "FULLADDMAX_LOG_LEVEL" not in os.environ,
+            "directory path did not pollute os.environ",
+        )
+
+
+def test_init_logging_env_file_malformed_lines_ignored() -> None:
+    _section("init_logging: malformed .env lines are silently ignored")
+    _strip_env()
+    with tempfile.TemporaryDirectory() as tmp:
+        bad = Path(tmp) / "garbage.env"
+        # Mix of: valid, malformed, weird-but-parseable, empty, comment.
+        _write_env_file(bad, [
+            "FULLADDMAX_LOG_LEVEL=ERROR",          # valid -> applied
+            "",                                    # empty line
+            "# this is a pure comment",            # pure comment
+            "=no_key_on_left",                     # missing key (regex reject)
+            "123STARTS_WITH_DIGIT=value",          # key must start with [A-Z_]
+            "good_key_lower=value",                # key regex is [A-Z_] only!
+            "  FULLADDMAX_LOG_FORMAT=json  ",      # valid (whitespace trimmed)
+            "trailing=line  # not really a comment",  # no comment stripping
+            "KEY_WITH_NO_VALUE=",                  # value empty -> skipped (if val)
+        ])
+        try:
+            lc.init_logging(env_file=bad)
+        except Exception as e:  # noqa: BLE001
+            _fail("init_logging crashed on malformed .env", repr(e))
+            return
+        # 1 valid line: FULLADDMAX_LOG_LEVEL=ERROR
+        _check(
+            logging.getLogger().level == logging.ERROR,
+            "valid FULLADDMAX_LOG_LEVEL=ERROR still applied",
+        )
+        # 1 valid line: FULLADDMAX_LOG_FORMAT=json (whitespace trimmed)
+        h = _find_handler(logging.getLogger(), logging.StreamHandler)
+        _check(
+            h is not None and isinstance(h.formatter, lc.JsonFormatter),
+            "valid FULLADDMAX_LOG_FORMAT=json still applied (whitespace stripped)",
+        )
+        # Malformed keys must NOT pollute os.environ.
+        for bad_key in ("NO_KEY_ON_LEFT", "123STARTS_WITH_DIGIT",
+                        "GOOD_KEY_LOWER", "TRAILING"):
+            _check(
+                bad_key not in os.environ,
+                f"malformed key {bad_key!r} was correctly rejected",
+            )
+
+
+def test_init_logging_env_file_empty_file() -> None:
+    _section("init_logging(env_file=<empty file>) — no-op, no crash")
+    _strip_env()
+    with tempfile.TemporaryDirectory() as tmp:
+        empty = Path(tmp) / "empty.env"
+        _write_env_file(empty, [])  # 0 lines
+        try:
+            lc.init_logging(env_file=empty)
+        except Exception as e:  # noqa: BLE001
+            _fail("init_logging crashed on empty .env", repr(e))
+            return
+        _check(
+            logging.getLogger().level == logging.INFO,
+            "empty file -> level stays INFO",
+        )
+
+
+def test_parse_env_file_missing_returns_empty_dict() -> None:
+    _section("_parse_env_file(missing) — returns {} instead of raising")
+    try:
+        out = lc._parse_env_file("/this/path/definitely/does/not/exist.env")
+    except Exception as e:  # noqa: BLE001
+        _fail("_parse_env_file raised on missing path", repr(e))
+        return
+    _check(out == {}, "_parse_env_file returns empty dict for missing file")
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
@@ -527,6 +712,14 @@ def main() -> int:
     test_init_logging_auto_default_paths()
     test_init_logging_returns_package_logger()
     test_init_logging_idempotent()
+    test_init_logging_env_file_none_literal()
+    test_init_logging_env_file_empty_iterables()
+    test_init_logging_env_file_nonexistent_single_path()
+    test_init_logging_env_file_iterable_with_missing_paths()
+    test_init_logging_env_file_path_is_directory()
+    test_init_logging_env_file_malformed_lines_ignored()
+    test_init_logging_env_file_empty_file()
+    test_parse_env_file_missing_returns_empty_dict()
 
     print()
     print("=" * 70)
