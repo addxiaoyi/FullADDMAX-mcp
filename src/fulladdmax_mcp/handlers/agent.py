@@ -40,6 +40,7 @@ import re
 from typing import Any
 
 from .. import context as ctx_mod
+from .. import i18n
 from .. import server_internal
 from ..dispatcher import OperationHandler, register_schema
 from ..llm import get_config
@@ -894,11 +895,7 @@ async def _hive_run(
     if waves < 1:
         waves = 1
     if waves > _HIVE_MAX_WAVES:
-        raise ValueError(
-            f"hive_run: waves={waves} exceeds hard ceiling "
-            f"max_waves={_HIVE_MAX_WAVES}.  Split the task or call "
-            f"hive_run twice if you really need more waves."
-        )
+        raise ValueError(i18n.t("hive_waves_range", got=waves))
     if max_subagents < 1:
         raise ValueError(
             f"hive_run: max_subagents={max_subagents} must be >= 1."

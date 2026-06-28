@@ -85,6 +85,108 @@ def detect_host_ai() -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Chinese cloud LLM providers
+# ---------------------------------------------------------------------------
+
+# Each row: (env-var prefix, default base URL, default model, source label).
+# All 6 providers speak the OpenAI Chat Completions protocol, so the
+# LLMClient needs no special-casing — only the autodetect layer has to
+# know which vendor the user is on.
+_CN_LLM_PROVIDERS: list[tuple[str, str, str, str]] = [
+    (
+        "DEEPSEEK_",
+        "https://api.deepseek.com/v1",
+        "deepseek-chat",
+        "DeepSeek (China)",
+    ),
+    (
+        "DASHSCOPE_",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "qwen-plus",
+        "Qwen (DashScope, China)",
+    ),
+    (
+        "QWEN_",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "qwen-plus",
+        "Qwen (DashScope, China)",
+    ),
+    (
+        "ZHIPUAI_",
+        "https://open.bigmodel.cn/api/paas/v4",
+        "glm-4-plus",
+        "GLM (ZhipuAI, China)",
+    ),
+    (
+        "GLM_",
+        "https://open.bigmodel.cn/api/paas/v4",
+        "glm-4-plus",
+        "GLM (ZhipuAI, China)",
+    ),
+    (
+        "ARK_",
+        "https://ark.cn-beijing.volces.com/api/v3",
+        "doubao-pro-32k",
+        "Doubao (Volcano Ark, China)",
+    ),
+    (
+        "DOUBAO_",
+        "https://ark.cn-beijing.volces.com/api/v3",
+        "doubao-pro-32k",
+        "Doubao (Volcano Ark, China)",
+    ),
+    (
+        "MOONSHOT_",
+        "https://api.moonshot.cn/v1",
+        "moonshot-v1-128k",
+        "Kimi (Moonshot, China)",
+    ),
+    (
+        "KIMI_",
+        "https://api.moonshot.cn/v1",
+        "moonshot-v1-128k",
+        "Kimi (Moonshot, China)",
+    ),
+    (
+        "YI_",
+        "https://api.lingyiwanwu.com/v1",
+        "yi-large",
+        "Yi (01.AI, China)",
+    ),
+    (
+        "LINGYIWANWU_",
+        "https://api.lingyiwanwu.com/v1",
+        "yi-large",
+        "Yi (01.AI, China)",
+    ),
+]
+
+
+def _resolve_cn_llm() -> tuple[str, str, str]:
+    """Pick (base_url, model, source) for whichever Chinese vendor the
+    user is on.  Looks at env-var prefixes — first match wins.  If no
+    specific provider marker is present (e.g. user only set
+    ``DEEPSEEK_API_KEY``) we still pick DeepSeek via the
+    "API_KEY was set" fallback below.
+    """
+    for prefix, base, model, label in _CN_LLM_PROVIDERS:
+        for k in os.environ:
+            if k.startswith(prefix):
+                # Allow the user to override the base URL or model.
+                snap = _first_env(prefix.rstrip("_") + "_BASE_URL")
+                if snap:
+                    base = snap
+                snap = _first_env(prefix.rstrip("_") + "_MODEL")
+                if snap:
+                    model = snap
+                return (base, model, label)
+    # Fallback: API_KEY was set but no specific env-var prefix
+    # matched (shouldn't normally happen since _first_env() above
+    # already returned truthy).  Defaults to DeepSeek.
+    return ("https://api.deepseek.com/v1", "deepseek-chat", "DeepSeek (China)")
+
+
+# ---------------------------------------------------------------------------
 # Auto-discovered LLM endpoint
 # ---------------------------------------------------------------------------
 
@@ -202,7 +304,25 @@ def detect_llm_env() -> EnvSnapshot:
             snap.source = host_label
             return snap
 
-    # 4. Local LLM servers
+    # 4. Chinese cloud LLM providers (all OpenAI-compatible)
+    #    Order matters: more-specific env-var prefixes first; for
+    #    each provider we accept both the official vendor prefix
+    #    (DEEPSEEK_*, DASHSCOPE_*, ...) and a friendly alias
+    #    (QWEN_*, GLM_*, KIMI_*, DOUBAO_*, YI_*) so users can pick
+    #    the convention they prefer.
+    cn = _first_env(
+        "DEEPSEEK_API_KEY", "QWEN_API_KEY", "DASHSCOPE_API_KEY",
+        "GLM_API_KEY", "ZHIPUAI_API_KEY",
+        "DOUBAO_API_KEY", "ARK_API_KEY",
+        "KIMI_API_KEY", "MOONSHOT_API_KEY",
+        "YI_API_KEY", "LINGYIWANWU_API_KEY",
+    )
+    if cn:
+        snap.api_key = cn
+        snap.base_url, snap.model, snap.source = _resolve_cn_llm()
+        return snap
+
+    # 5. Local LLM servers
     ollama = _first_env("OLLAMA_HOST")
     if ollama:
         snap.base_url = (ollama.rstrip("/") + "/v1") if not ollama.endswith("/v1") else ollama

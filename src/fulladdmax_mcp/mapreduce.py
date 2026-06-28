@@ -17,6 +17,7 @@ from typing import Any
 
 from .context import new_session, put
 from .errors import EmptyInputError, ToolTimeoutError
+from .i18n import t as _t
 from .llm import get_client
 from .tools import openai_tool_specs
 
@@ -86,9 +87,9 @@ async def run(
             registered tool. ``[]`` = no tool-calling.
     """
     if not items:
-        raise EmptyInputError("map_reduce_run: 'items' must be a non-empty list.")
+        raise EmptyInputError(_t("wf_empty_items"))
     if not 1 <= max_concurrent <= 10:
-        raise EmptyInputError("max_concurrent must be between 1 and 10.")
+        raise EmptyInputError(_t("wf_num_concurrent"))
 
     tool_specs = _resolve_tool_specs(tools)
 
@@ -103,7 +104,9 @@ async def run(
                 *[_map(it, map_prompt, sem, tool_specs) for it in items]
             )
     except asyncio.TimeoutError as e:
-        raise ToolTimeoutError(f"map_reduce_run (map phase) exceeded {timeout}s") from e
+        raise ToolTimeoutError(
+            _t("wf_timeout", op="map_reduce_run (map phase)", seconds=timeout)
+        ) from e
 
     mapped_text = "\n\n---\n\n".join(
         f"### Item {i + 1}\n{out if not err else f'[ERROR] {err}'}"
@@ -133,7 +136,9 @@ async def run(
             else:
                 final = await client.chat(msgs)
     except asyncio.TimeoutError as e:
-        raise ToolTimeoutError(f"map_reduce_run (reduce phase) exceeded {timeout}s") from e
+        raise ToolTimeoutError(
+            _t("wf_timeout", op="map_reduce_run (reduce phase)", seconds=timeout)
+        ) from e
 
     put("final", final)
     return final

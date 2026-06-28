@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .errors import RateLimitError
+from .i18n import t as _t
 
 log = logging.getLogger(__name__)
 
@@ -250,7 +251,7 @@ class RateLimiter:
             ok, wait = self._global_req.try_consume(1)
             if not ok:
                 raise RateLimitError(
-                    f"global RPM limit {self.config.global_rpm} reached",
+                    _t("rate_global_rpm", limit=self.config.global_rpm),
                     retry_after=wait,
                     scope="global_rpm",
                 )
@@ -260,8 +261,11 @@ class RateLimiter:
                 ok, wait = req.try_consume(1)
                 if not ok:
                     raise RateLimitError(
-                        f"per-session RPM limit {self.config.per_session_rpm} "
-                        f"reached for session {session_id!r}",
+                        _t(
+                            "rate_session_rpm",
+                            limit=self.config.per_session_rpm,
+                            sid=session_id,
+                        ),
                         retry_after=wait,
                         scope="per_session_rpm",
                     )
@@ -277,8 +281,11 @@ class RateLimiter:
                         self._global_req.capacity, self._global_req.tokens + 1
                     )
                 raise RateLimitError(
-                    f"global TPM limit {self.config.global_tpm} reached "
-                    f"(needed {est} tokens)",
+                    _t(
+                        "rate_global_tpm",
+                        limit=self.config.global_tpm,
+                        needed=est,
+                    ),
                     retry_after=wait,
                     scope="global_tpm",
                 )
@@ -293,9 +300,12 @@ class RateLimiter:
                             self._global_tok.tokens + est,
                         )
                     raise RateLimitError(
-                        f"per-session TPM limit {self.config.per_session_tpm} "
-                        f"reached for session {session_id!r} "
-                        f"(needed {est} tokens)",
+                        _t(
+                            "rate_session_tpm",
+                            limit=self.config.per_session_tpm,
+                            sid=session_id,
+                            needed=est,
+                        ),
                         retry_after=wait,
                         scope="per_session_tpm",
                     )

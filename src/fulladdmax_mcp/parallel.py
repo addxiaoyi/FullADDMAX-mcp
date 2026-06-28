@@ -17,6 +17,7 @@ from typing import Any
 
 from .context import new_session, put, snapshot
 from .errors import EmptyInputError, ToolTimeoutError
+from .i18n import t as _t
 from .llm import get_client
 from .tools import openai_tool_specs
 
@@ -90,9 +91,11 @@ async def run(
             registered tool. ``[]`` = no tool-calling.
     """
     if not tasks:
-        raise EmptyInputError("parallel_agents_run: 'tasks' must be a non-empty list.")
+        raise EmptyInputError(
+            _t("wf_empty_task", op="parallel_agents_run: 'tasks' must be a non-empty list")
+        )
     if not 1 <= max_concurrent <= 10:
-        raise EmptyInputError("max_concurrent must be between 1 and 10.")
+        raise EmptyInputError(_t("wf_num_concurrent"))
 
     tool_specs = _resolve_tool_specs(tools)
 
@@ -109,7 +112,9 @@ async def run(
                 *[_one(i, t, sem, shared, tool_specs) for i, t in enumerate(tasks)]
             )
     except asyncio.TimeoutError as e:
-        raise ToolTimeoutError(f"parallel_agents_run exceeded {timeout}s") from e
+        raise ToolTimeoutError(
+            _t("wf_timeout", op="parallel_agents_run", seconds=timeout)
+        ) from e
 
     results.sort(key=lambda x: x[0])
     put("results", [r for _, r, _ in results])

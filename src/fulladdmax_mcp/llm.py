@@ -15,11 +15,12 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 import httpx
 
 from . import context as ctx_mod
+from . import i18n
 from .env_autodetect import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
@@ -54,6 +55,82 @@ ToolSpec = dict[str, Any]
 # Returned by :meth:`LLMClient.chat_with_tools` when the model emits a
 # non-empty ``tool_calls`` list.
 ToolCall = dict[str, Any]  # {"id", "type": "function", "function": {"name", "arguments"}}
+
+
+def _normalize_tool_calls(raw: Any) -> list[ToolCall]:
+    """Coerce a ``tool_calls`` payload from any OpenAI-compatible
+    provider into the canonical wire format our dispatcher expects.
+
+    Canonical form (OpenAI):
+        {
+          "id":       "call_abc123",
+          "type":     "function",
+          "function": {"name": "...", "arguments": "JSON string"},
+        }
+
+    Variations we see in the wild, mostly from China-cloud providers
+    (GLM / 豆包 Doubao / Qwen) and from a few local LLM servers:
+
+    1. ``arguments`` as a **dict** instead of a JSON string
+       (GLM-4 sometimes does this).  We ``json.dumps`` it.
+    2. ``id`` field named ``tool_call_id`` (some 豆包 versions).
+    3. ``type`` field missing or named ``kind``.  We default to
+       ``"function"``.
+    4. ``name`` at top level instead of under ``function`` (rare).
+    5. ``arguments`` empty / None / ``{}``.  We treat as ``"{}"``.
+
+    Returns a fresh list — the input is never mutated.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[ToolCall] = []
+    for i, call in enumerate(raw):
+        if not isinstance(call, dict):
+            continue
+
+        # --- 1. pull out ``function`` (or build one) ---
+        fn = call.get("function")
+        if not isinstance(fn, dict):
+            # Some 豆包 responses put ``name`` + ``arguments`` at top level.
+            fn = {}
+            if "name" in call:
+                fn["name"] = call["name"]
+            if "arguments" in call:
+                fn["arguments"] = call["arguments"]
+            # ``parameters`` (豆包 alt) -> rename to ``arguments`` for
+            # downstream uniformity.
+            elif "parameters" in call:
+                fn["arguments"] = call["parameters"]
+
+        # --- 2. coerce ``arguments`` to a JSON string ---
+        args = fn.get("arguments", "")
+        if args is None or args == "":
+            args = "{}"
+        elif isinstance(args, (dict, list)):
+            try:
+                args = json.dumps(args, ensure_ascii=False)
+            except (TypeError, ValueError):
+                args = str(args)
+        elif not isinstance(args, str):
+            args = str(args)
+
+        # --- 3. resolve ``id`` (prefer ``id``, fall back to ``tool_call_id``) ---
+        call_id = call.get("id") or call.get("tool_call_id") or f"call_{i}"
+
+        # --- 4. resolve ``type`` (default to "function") ---
+        call_type = call.get("type") or call.get("kind") or "function"
+
+        out.append(
+            {
+                "id": call_id,
+                "type": call_type,
+                "function": {
+                    "name": fn.get("name", ""),
+                    "arguments": args,
+                },
+            }
+        )
+    return out
 
 
 @dataclass
@@ -155,10 +232,7 @@ class LLMClient:
         on transport / 4xx errors; retries on 5xx + network errors.
         """
         if not self.config.api_key:
-            raise LLMError(
-                "LLM not configured. Call configure_llm(base_url, api_key, model) "
-                "or set FULLADDMAX_API_KEY in the environment."
-            )
+            raise LLMError(i18n.t("llm_not_configured"))
 
         payload: dict[str, Any] = {
             "model": self.config.model,
@@ -194,9 +268,11 @@ class LLMClient:
             try:
                 resp = await client.post("/chat/completions", json=payload)
             except httpx.TimeoutException as e:
-                last_exc = LLMTimeoutError(f"LLM request timed out: {e}")
+                last_exc = LLMTimeoutError(i18n.t("llm_timeout", seconds=self.config.timeout))
             except httpx.HTTPError as e:
-                last_exc = LLMError(f"LLM network error: {type(e).__name__}: {e}")
+                last_exc = LLMError(
+                    i18n.t("llm_network", err=f"{type(e).__name__}: {e}")
+                )
             else:
                 if resp.status_code < 400:
                     data = resp.json()
@@ -204,11 +280,25 @@ class LLMClient:
                         message = data["choices"][0]["message"]
                     except (KeyError, IndexError, TypeError) as e:
                         raise LLMError(
-                            f"LLM returned malformed payload: {e}; body={str(data)[:300]}"
+                            i18n.t("llm_malformed", detail=f"{e}; body={str(data)[:300]}")
                         ) from e
                     if not isinstance(message, dict):
                         raise LLMError(
-                            f"LLM returned malformed payload: message is {type(message).__name__}"
+                            i18n.t(
+                                "llm_malformed",
+                                detail=f"message is {type(message).__name__}",
+                            )
+                        )
+                    # Normalize tool_calls to OpenAI's wire format.  Most
+                    # Chinese cloud providers (GLM / 豆包 / Qwen) speak
+                    # the same protocol, but their actual responses have
+                    # small variations: arguments sometimes a dict, the
+                    # id field sometimes named ``tool_call_id``,
+                    # ``type`` field sometimes missing.  See
+                    # :func:`_normalize_tool_calls` for the full list.
+                    if "tool_calls" in message:
+                        message["tool_calls"] = _normalize_tool_calls(
+                            message["tool_calls"]
                         )
                     # Record token usage. Failures here MUST NOT affect
                     # the call result — the LLM already gave us an answer.
@@ -216,7 +306,7 @@ class LLMClient:
                     return message
                 # 4xx -> permanent; 5xx -> retriable
                 body_preview = resp.text[:300]
-                err = LLMError(f"LLM HTTP {resp.status_code}: {body_preview}")
+                err = LLMError(i18n.t("llm_http", status=resp.status_code, body=body_preview))
                 if 400 <= resp.status_code < 500:
                     raise err from None
                 last_exc = err
@@ -268,6 +358,106 @@ class LLMClient:
         """
         message = await self._request(messages, **overrides)
         return str(message.get("content") or "")
+
+    async def chat_stream(
+        self, messages: list[dict[str, str]], **overrides: Any
+    ) -> "AsyncIterator[str]":
+        """Send a chat completion request and yield content chunks as
+        they arrive from the LLM.
+
+        Uses the OpenAI ``stream=true`` Server-Sent-Events protocol.
+        Works with every OpenAI-compatible endpoint (OpenAI / Anthropic
+        / DeepSeek / Qwen / GLM / 豆包 / Kimi / Ollama / vLLM / LM Studio).
+
+        Yields ``str`` content fragments.  ``tool_calls`` chunks are
+        ignored in stream mode (call :meth:`chat_with_tools` for the
+        tool-calling loop).  Errors are raised eagerly, not streamed.
+
+        The MCP tool surface stays synchronous — this method is for
+        library users (e.g. a custom dispatcher that wants to feed
+        chunks to a TUI / web UI).  The existing ``chat()`` /
+        ``chat_with_tools()`` paths are unchanged.
+        """
+        if not self.config.api_key:
+            raise LLMError(i18n.t("llm_not_configured"))
+
+        payload: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": self.config.temperature,
+            "max_tokens": self.config.max_tokens,
+            "stream": True,
+        }
+        if self.config.tools and "tools" not in overrides:
+            payload["tools"] = list(self.config.tools)
+            payload["tool_choice"] = overrides.pop(
+                "tool_choice", self.config.tool_choice
+            )
+        payload.update(overrides)
+
+        # Reserve a rate-limit slot before opening the stream.
+        try:
+            get_limiter().acquire(
+                session_id=ctx_mod.session_id(),
+                estimated_tokens=int(payload.get("max_tokens") or 0),
+            )
+        except Exception:
+            raise
+
+        # Force stream=True — caller cannot disable it.
+        payload["stream"] = True
+
+        client = await self._get_client()
+        # We do NOT retry on stream errors: the response is mid-flight
+        # and the caller has already started seeing partial output.
+        # Retrying would re-charge tokens + produce duplicate text.
+        try:
+            async with client.stream(
+                "POST", "/chat/completions", json=payload
+            ) as resp:
+                if resp.status_code >= 400:
+                    body = await resp.aread()
+                    raise LLMError(
+                        f"LLM HTTP {resp.status_code}: {body.decode('utf-8', 'replace')[:300]}"
+                    )
+                # OpenAI SSE format:
+                #   data: {"choices": [{"delta": {"content": "..."}}]}
+                #   data: [DONE]
+                # Some China-cloud providers (Qwen DashScope, GLM) emit
+                # the same wire format; some (e.g. vLLM) omit the
+                # leading space after `data:`.  We tolerate both.
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        # Some servers send keep-alive comments or
+                        # partial lines; skip silently.
+                        continue
+                    try:
+                        delta = (
+                            chunk.get("choices", [{}])[0]
+                            .get("delta", {})
+                        )
+                    except (KeyError, IndexError, TypeError):
+                        continue
+                    content = delta.get("content")
+                    if content:
+                        yield content
+        except httpx.TimeoutException as e:
+            raise LLMTimeoutError(
+                i18n.t("llm_stream_timeout", err=str(e))
+            ) from e
+        except httpx.HTTPError as e:
+            raise LLMError(
+                i18n.t("llm_stream_network", err=f"{type(e).__name__}: {e}")
+            ) from e
 
     async def chat_raw(
         self, messages: list[dict[str, Any]], **overrides: Any

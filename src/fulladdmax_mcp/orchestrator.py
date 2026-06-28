@@ -21,6 +21,7 @@ from typing import Any
 
 from .context import new_session, put, snapshot
 from .errors import EmptyInputError, LLMError, ToolTimeoutError
+from .i18n import t as _t
 from .llm import get_client
 from .tools import openai_tool_specs
 
@@ -63,17 +64,17 @@ def _extract_json(text: str) -> list[str]:
         data = json.loads(text)
     except json.JSONDecodeError as e:
         raise LLMError(
-            f"Orchestrator planner returned non-JSON: {e}; raw={text[:200]!r}"
+            _t("llm_planner_json", err=f"{e}; raw={text[:200]!r}")
         ) from e
     if isinstance(data, dict):
         subs = data.get("subtasks")
     else:
         subs = data
     if not isinstance(subs, list) or not subs:
-        raise LLMError("Planner output did not contain a non-empty 'subtasks' list.")
+        raise LLMError(_t("llm_planner_empty"))
     cleaned = [str(s).strip() for s in subs if str(s).strip()]
     if not cleaned:
-        raise LLMError("Planner output contained only empty subtask strings.")
+        raise LLMError(_t("llm_planner_blank"))
     return cleaned
 
 
@@ -175,9 +176,9 @@ async def run(
             behaviour).
     """
     if not task or not task.strip():
-        raise EmptyInputError("orchestrator_run: 'task' must be a non-empty string.")
+        raise EmptyInputError(_t("wf_empty_task", op="orchestrator_run"))
     if not 1 <= num_workers <= 10:
-        raise EmptyInputError("num_workers must be between 1 and 10.")
+        raise EmptyInputError(_t("wf_num_workers"))
 
     tool_specs = _resolve_tool_specs(tools)
     use_tools = bool(tool_specs)
@@ -212,13 +213,15 @@ async def run(
 
             put("worker_results", [r for _, r in pairs])
             if errors and len(errors) == len(subtasks):
-                raise LLMError("All workers failed: " + " | ".join(errors))
+                raise LLMError(_t("llm_all_workers", detail=" | ".join(errors)))
 
             final = await _synthesize(task, pairs, use_tools)
             put("final", final)
             return final
     except asyncio.TimeoutError as e:
-        raise ToolTimeoutError(f"orchestrator_run exceeded {timeout}s") from e
+        raise ToolTimeoutError(
+            _t("wf_timeout", op="orchestrator_run", seconds=timeout)
+        ) from e
 
 
 def _resolve_tool_specs(whitelist: list[str] | None) -> list[dict[str, Any]]:
