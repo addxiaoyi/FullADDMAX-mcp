@@ -22,22 +22,56 @@ FullADDMAX-mcp turns a single AI agent into a team. It exposes four battle-teste
 
 ## ✨ 特性 / Features
 
-- **4 个 mega tool / 4 mega tools, 31 个 op** — `admin` (9) / `agent` (7) / `config` (10) / `knowledge` (5)
-- **MCP stdio 协议 / MCP stdio transport** — 直接被 Claude Desktop / Cursor / Trae / Continue.dev / Codex 加载
-- **LLM 自动识别 / LLM autodetect** — 扫 env 顺序：`FULLADDMAX_*` → `OPENAI_*` → 宿主注入 (Claude / Cursor / Copilot) → 本地 (Ollama / vLLM / LM Studio)
-- **OpenAI 兼容 LLM / OpenAI-compatible LLM** — 任何 `/v1/chat/completions` 端点，不绑定 provider
-- **零配置离线 stub / Zero-config offline stub** — `FULLADDMAX_AGENT_OFFLINE=1` 时 7 个 agent op 全走 deterministic Markdown 框架，无 LLM、无网络
-- **7 个 agent 工作流 / 7 agent workflows** — orchestrator / parallel / map_reduce / swarm + auto_workflow / delegate / hive_run
-- **共享会话 Context / Shared session context** — 工具调用之间可传递状态 (Memory + SQLite)
-- **超时 + 重试 + 限流 + Token 用量 / Timeout + retry + rate limit + usage tracking** — 防止 LLM 限流和卡死
-- **零额外运行时依赖 / No extra runtime deps** — 只依赖 `mcp` + `httpx`
-- **🎛 一键看板 / One-command panel** — `fulladdmax-mcp panel` 生成单文件 SVG 仪表盘（3 张核心卡，纯 SVG 无 emoji）
+#### 🛠 Tools
+
+- **4 个 mega tool · 31 个 op** — `admin` (9) · `agent` (7) · `config` (10) · `knowledge` (5)
+- **MCP stdio transport** — 直接被 Claude Desktop / Cursor / Trae / Continue.dev / Codex 加载
+
+#### 🔌 LLM
+
+- **Autodetect 优先级链** — `FULLADDMAX_*` → `OPENAI_*` → 宿主注入 (Claude / Cursor / Copilot) → 本地 (Ollama / vLLM / LM Studio)
+- **OpenAI 兼容端点** — 任何 `/v1/chat/completions`，不绑定 provider
+- **零配置离线 stub** — `FULLADDMAX_AGENT_OFFLINE=1` 时 7 个 agent op 全走 deterministic Markdown 框架，无 LLM、无网络
+
+#### 🛡 Reliability
+
+- **超时 + 重试 + 限流令牌桶** — 防止 LLM 限流和卡死（global + per-session）
+- **Token 用量追踪** — 全自动记录每次调用的 prompt/completion token + 成本估算
+- **持久化 session context** — Memory + SQLite 后端，跨调用可传递状态
+
+#### 📦 Dev
+
+- **零额外运行时依赖** — 只依赖 `mcp` + `httpx`
+- **🎛 一键看板** — `fulladdmax-mcp panel` 生成单文件 SVG 仪表盘（3 张核心卡，纯 SVG 无 emoji）
+- **7 个 agent 工作流** — orchestrator · parallel · map_reduce · swarm + auto_workflow · delegate · hive_run
 
 ---
 
 ## 🎛 工作面板 / Dashboard
 
 `fulladdmax-mcp` 自带一个**纯 SVG 仪表盘**（无任何 emoji / 图片依赖），随时呼出看当前 server 状态：版本、uptime、LLM 配置（model / base_url / api_key / timeout / retries）、31 个注册 op 分布。一行命令生成单文件 SVG，可直接 `git commit` 进 README。
+
+### 3 张核心卡
+
+| 卡片 | 字段 | 含义 |
+|------|------|------|
+| **Server** | version · uptime · mcp servers | 健康检查 / 版本号 / 运行时间 |
+| **LLM** | model · base_url · api_key · timeout · retries | 智能三态：真 key / 继承自宿主 / 开箱即用提示 |
+| **Agent Tools** | total ops: 31 | 4 个 mega tool 各自的 op 数 (admin 9 / agent 7 / config 10 / knowledge 5) |
+
+### 智能三态 / Smart 3-state
+
+api_key 字段，缺省**不报警**：
+
+| 情况 | api_key 单元格 | 颜色 | 副标题 |
+|------|----------------|------|--------|
+| 配了真 key | `sk-xxxx****`（脱敏）| 白 | — |
+| 配了空 + 检测到宿主 | `inherited from <host>` | 绿 | `host-LLM: <host>` |
+| 配了空 + 裸跑 | `(off-the-shelf)` | 灰 | `set FULLADDMAX_API_KEY to enable agent ops` |
+
+> 没配 LLM 时 server 也能跑 `knowledge` / `config` / `admin`，并显示柔和的"off-the-shelf"标签。配了 LLM 后 4 个 mega tool 全可用（31 个 op）。
+
+### 用法 / Usage
 
 ```bash
 # 生成单文件 SVG
@@ -51,167 +85,6 @@ fulladdmax-mcp panel --serve --port 8765 --refresh 5
 open docs/preview.html        # macOS
 start docs\preview.html       # Windows
 ```
-
-**3 张核心卡**：
-
-| 卡片 | 字段 | 含义 |
-|------|------|------|
-| **Server** | version · uptime · mcp servers | 健康检查 / 版本号 / 运行时间 |
-| **LLM** | model · base_url · api_key · timeout · retries | 智能三态：真 key / 继承自宿主 / 开箱即用提示 |
-| **Agent Tools** | total ops: 31 | 4 个 mega tool 各自的 op 数 (admin 9 / agent 7 / config 10 / knowledge 5) |
-
-**智能三态**（api_key 字段，缺省不报警）：
-
-| 情况 | api_key 单元格 | 颜色 | 副标题 |
-|------|----------------|------|--------|
-| 配了真 key | `sk-xxxx****`（脱敏）| 白 | — |
-| 配了空 + 检测到宿主 | `inherited from <host>` | 绿 | `host-LLM: <host>` |
-| 配了空 + 裸跑 | `(off-the-shelf)` | 灰 | `set FULLADDMAX_API_KEY to enable agent ops` |
-
-**开箱即用**：没配 LLM 时 server 也能跑 `knowledge` / `config` / `admin`，并显示柔和的"off-the-shelf"标签，不报警。配了 LLM 后 4 个 mega tool 全可用（31 个 op）。
-
----
-
-## 🌳 AI 主动分裂：delegate 操作
-
-当一个任务包含 **3+ 个独立子任务**（如"研究 A、B、C 三个市场"），让 AI 主动调 `delegate` 比按顺序一个一个跑快 N 倍——因为框架会**自动并行**派发 N 个 worker 同时干活。
-
-```python
-# 一次性让 3 个 worker 并行调研
-agent(operation="delegate",
-      params_json='{"task": "调研北京、上海、深圳三个城市的电动车市场"}')
-# → 内部：启发式切分为 3 个 sub-task
-#       并行调 3 个 worker（max_parallel=5）
-#       合成最终报告
-
-# 显式给出子任务（跳过启发式）
-agent(operation="delegate",
-      params_json='{"task": "对比 3 个数据库",
-                    "children": ["Postgres", "MySQL", "SQLite"]}')
-
-# 强制分裂（atomic 任务也至少 2 个 worker 取不同视角）
-agent(operation="delegate",
-      params_json='{"task": "设计 API",
-                    "split": "always"}')
-
-# 强制单 worker
-agent(operation="delegate",
-      params_json='{"task": "生成一个句子",
-                    "split": "never"}')
-```
-
-**关键设计**
-
-| 参数 | 默认 | 含义 |
-|------|------|------|
-| `task` | — | 主任务（必填） |
-| `children` | 自动启发式 | 预定义子任务列表（跳过启发式） |
-| `split` | `"auto"` | `"auto"` / `"always"` / `"never"` |
-| `max_depth` | `2` | 递归深度上限（子代理可继续 `delegate`） |
-| `max_parallel` | `5` | 单层最大并发 worker 数 |
-
-**启发式分隔符**：CJK `，。、；。` + EN `,` `.` `?` `!` `;` + ` and ` ` then ` ` & ` + 换行。
-
-**AI 怎么知道要用它？** `agent` mega tool 的 docstring 明确写：
-> When a user request contains 3+ independent parts (e.g. "research A, B, and C"), call `delegate` instead of doing them one-by-one.
-
----
-
-## 🚫 全部不依赖 LLM（FULLADDMAX_AGENT_OFFLINE 模式）
-
-设 `FULLADDMAX_AGENT_OFFLINE=1` 之后，**所有 7 个 agent op 都走 deterministic stub 路径**——无 LLM 调用、无网络、无 GPU，纯 Python 文本生成，输出结构化 Markdown 框架。
-
-```bash
-export FULLADDMAX_AGENT_OFFLINE=1
-```
-
-| op | 0 LLM 时行为 |
-|----|------------|
-| `orchestrator_run` | 1 planner 框架 + N worker 框架 + 1 synthesizer 框架 |
-| `parallel_agents_run` | N 个 worker 框架（每个 task 一段） |
-| `map_reduce_run` | map 阶段 N 个 item 框架 + reduce 阶段合并清单 |
-| `swarm_run` | initial agent 框架 + handoff 链模板 |
-| `auto_workflow` | **完全无 LLM**（纯启发式路由） |
-| `delegate` | N 个 sub-agent 框架（heuristic split） |
-| `hive_run` | 6 部门框架 × waves 波次 + 刑部批评回流说明 |
-
-**实测**（`scripts/verify_all_offline.py`）：
-```
-[OK]  orchestrator_run           -> ### orchestrator (offline stub)
-[OK]  parallel_agents_run        -> ### parallel_agents_run (offline stub)
-[OK]  map_reduce_run             -> ### map_reduce_run (offline stub)
-[OK]  swarm_run                  -> ### swarm_run (offline stub)
-[OK]  auto_workflow              -> ### auto_workflow → `parallel`
-[OK]  delegate                   -> ### delegate (offline stub)
-[OK]  hive_run                   -> ### hive_run (offline stub — 三省六部 + 蜂巢)
-```
-
-**三态行为总结**
-
-| 状态 | 行为 |
-|------|------|
-| 1. `FULLADDMAX_AGENT_OFFLINE=1` | **强制走 stub**（不依赖 LLM 状态） |
-| 2. 没设 env + 没 LLM | 返 lazy-hint 文本（教程式） |
-| 3. 配了 LLM | 走真 LLM 路径 |
-
-→ **真正的"开箱即用"**：装完即用，不需 LLM、不需配置、不需联网。
-
-## 🐝 三省六部蜂巢：hive_run 操作
-
-`delegate` 适合"独立子任务并行"；当任务是**"一个复杂事需要 N 个角度同时看"**时，调用 `hive_run`：
-
-| 部门 | 角度 |
-|------|------|
-| **吏部 (Personnel)** | 利益相关者、角色、决策点 |
-| **户部 (Revenue)** | 成本、ROI、预算 |
-| **礼部 (Protocol)** | 合规、伦理、UX、标准 |
-| **兵部 (Defense)** | 风险、边缘 case、扩展性 |
-| **刑部 (Justice)** | 红队、批评、找最弱假设 |
-| **工部 (Engineering)** | 具体计划、里程碑、架构 |
-
-```python
-# 一声令下，6 部门同时进攻
-agent(operation="hive_run",
-      params_json='{"task": "设计一个全球支付系统"}')
-# → wave 1: 6 个 minister 并行（无 max_parallel 限制）
-# → 刑部 (Justice) 的批评提炼为 feedback
-# → wave 2: 6 个 minister 拿 feedback 重新输出
-# → 12 个子代理在 < 1 秒内完成
-
-# 自定义部门（自定义角度）
-agent(operation="hive_run",
-      params_json='{"task": "分析市场进入策略",
-                    "departments": ["marketing", "legal", "engineering"]}')
-
-# 3 波次（每波更精炼）
-agent(operation="hive_run",
-      params_json='{"task": "重构单体为微服务",
-                    "waves": 3}')
-
-# 提高预算上限
-agent(operation="hive_run",
-      params_json='{"task": "...",
-                    "max_subagents": 500}')
-```
-
-**关键区别：hive_run vs delegate**
-
-|  | `delegate` | `hive_run` |
-|---|---|---|
-| 拆分方式 | 启发式按 `,` `、` `and` 等拆 | 固定 N 部门，每部门看一个角度 |
-| 适用任务 | 独立子任务（研究 A, B, C） | 一个事多角度（设计 + 风险 + 成本 + ...） |
-| 反馈循环 | 无 | **有**（刑部批评→其他部门第 2 波） |
-| 递归深度 | `max_depth=2` | `max_depth=null`（默认无限；可配） |
-| 并发上限 | `max_parallel=5` | **无**（6 部门全部同时跑） |
-| waves 上限 | N/A | **20 硬上限**（超过抛 ValueError，不静默截断） |
-
-**三层硬保护**（按触发顺序）：
-
-1. **waves ≤ 20** — 超过立即抛 `ValueError("...exceeds hard ceiling max_waves=20...")`，让用户知道
-2. **max_depth** — session context 跟踪 `hive_depth`；跨调用 LLM 想再调 hive_run 时若超限，降级为单次 `parallel_agents_run` 兜底
-3. **max_subagents = 200** — 总子代理预算；达到后跳过当前 wave，运行坍缩为最终合成
-
-**为什么硬上限不叫"没有数量限制"？**「没有限制」指的是**设计上不阻止 AI 自主扩展**：递归、并发、waves 数都由 LLM 自由决定。但工程上必须给"AI 行为异常 / 用户传错参数"留 3 道安全网，否则 MCP server 会爆。这是负责任的"自由"。
 
 ### 实际效果 / What it looks like
 
@@ -246,9 +119,113 @@ agent(operation="hive_run",
 | Aider | `AIDER_` |
 | Zed | `ZED_` / `ZED_AGENT_` |
 
-扫到就显示 `inherited from <host>`（绿）+ 副标题 `host-LLM: <host>`；扫不到就显示柔和的 `(off-the-shelf)` 灰标签 + 提示 `set FULLADDMAX_API_KEY to enable agent ops` —— **不报警**，因为非 LLM 的 op (`knowledge` / `config` / `admin`) 仍可用。
-
 > Trae IDE 自身在 spawn MCP server 时会注入 `CLAUDE_CODE_*` env var，所以 `fulladdmax-mcp panel` 在 Trae 里直接跑就会显示「inherited from Claude Desktop」——你不用自己 export 任何东西。
+
+---
+
+## 🤖 Agent Workflows
+
+`agent` mega tool 暴露 **7 个 op**，覆盖"独立子任务并行 / 多角度分析 / 流水线处理 / 自主分裂"四大场景。下面 3 个最常用：
+
+### delegate — 启发式并行
+
+当任务包含 **3+ 个独立子任务**（如"研究 A、B、C 三个市场"），让 AI 主动调 `delegate` 比按顺序一个一个跑快 N 倍——框架会**自动并行**派发 N 个 worker 同时干活。
+
+```python
+# 启发式切分（按标点 + and/then 拆）
+agent(operation="delegate",
+      params_json='{"task": "调研北京、上海、深圳三个城市的电动车市场"}')
+# → 内部：3 个 worker 并行（max_parallel=5）
+
+# 显式给出子任务
+agent(operation="delegate",
+      params_json='{"task": "对比 3 个数据库",
+                    "children": ["Postgres", "MySQL", "SQLite"]}')
+
+# 强制分裂 / 单 worker
+agent(operation="delegate",
+      params_json='{"task": "...", "split": "always"|"never"}')
+```
+
+| 参数 | 默认 | 含义 |
+|------|------|------|
+| `task` | — | 主任务（必填） |
+| `children` | 自动启发式 | 预定义子任务列表（跳过启发式） |
+| `split` | `"auto"` | `"auto"` / `"always"` / `"never"` |
+| `max_depth` | `2` | 递归深度上限（子代理可继续 `delegate`） |
+| `max_parallel` | `5` | 单层最大并发 worker 数 |
+
+**启发式分隔符**：CJK `，。、；。` + EN `,` `.` `?` `!` `;` + ` and ` ` then ` ` & ` + 换行。
+
+### 零 LLM 模式 / Offline stub
+
+设 `FULLADDMAX_AGENT_OFFLINE=1` 后，**所有 7 个 agent op 都走 deterministic stub 路径**——无 LLM 调用、无网络、无 GPU，纯 Python 文本生成。
+
+```bash
+export FULLADDMAX_AGENT_OFFLINE=1
+```
+
+| op | 0 LLM 时行为 |
+|----|------------|
+| `orchestrator_run` | 1 planner 框架 + N worker 框架 + 1 synthesizer 框架 |
+| `parallel_agents_run` | N 个 worker 框架（每个 task 一段） |
+| `map_reduce_run` | map 阶段 N 个 item 框架 + reduce 阶段合并清单 |
+| `swarm_run` | initial agent 框架 + handoff 链模板 |
+| `auto_workflow` | **完全无 LLM**（纯启发式路由） |
+| `delegate` | N 个 sub-agent 框架（heuristic split） |
+| `hive_run` | 6 部门框架 × waves 波次 + 刑部批评回流说明 |
+
+**三态行为**：
+
+| 状态 | 行为 |
+|------|------|
+| 1. `FULLADDMAX_AGENT_OFFLINE=1` | **强制走 stub**（不依赖 LLM 状态） |
+| 2. 没设 env + 没 LLM | 返 lazy-hint 文本（教程式） |
+| 3. 配了 LLM | 走真 LLM 路径 |
+
+→ **真正的"开箱即用"**：装完即用，不需 LLM、不需配置、不需联网。
+
+### hive_run — 三省六部蜂巢
+
+`delegate` 适合"独立子任务并行"；当任务是**"一个复杂事需要 N 个角度同时看"**时，调 `hive_run`：
+
+| 部门 | 角度 |
+|------|------|
+| **吏部 (Personnel)** | 利益相关者、角色、决策点 |
+| **户部 (Revenue)** | 成本、ROI、预算 |
+| **礼部 (Protocol)** | 合规、伦理、UX、标准 |
+| **兵部 (Defense)** | 风险、边缘 case、扩展性 |
+| **刑部 (Justice)** | 红队、批评、找最弱假设 |
+| **工部 (Engineering)** | 具体计划、里程碑、架构 |
+
+```python
+# 6 部门并行
+agent(operation="hive_run",
+      params_json='{"task": "设计一个全球支付系统"}')
+# → wave 1: 6 minister 并行 → 刑部批评提炼为 feedback
+# → wave 2: 6 minister 拿 feedback 重出
+# → 12 子代理在 < 1 秒完成
+
+# 3 波次 / 自定义部门 / 提预算
+agent(operation="hive_run",
+      params_json='{"task": "...",
+                    "waves": 3,
+                    "departments": ["marketing", "legal", "eng"],
+                    "max_subagents": 500}')
+```
+
+**hive_run vs delegate**：
+
+|  | `delegate` | `hive_run` |
+|---|---|---|
+| 拆分方式 | 启发式按 `,` `、` `and` 等拆 | 固定 N 部门，每部门看一个角度 |
+| 适用任务 | 独立子任务（研究 A, B, C） | 一个事多角度（设计 + 风险 + 成本 + ...） |
+| 反馈循环 | 无 | **有**（刑部批评→其他部门第 2 波） |
+| 递归深度 | `max_depth=2` | `max_depth=null`（默认无限；可配） |
+| 并发上限 | `max_parallel=5` | **无**（6 部门全部同时跑） |
+| waves 上限 | N/A | **20 硬上限**（超过抛 `ValueError`，不静默截断） |
+
+**三层硬保护**（按触发顺序）：`waves ≤ 20` → `max_depth` → `max_subagents = 200`。「没有数量限制」指的是**设计上不阻止 AI 自主扩展**，但工程上必须给异常路径留 3 道安全网——这是负责任的"自由"。
 
 ---
 
