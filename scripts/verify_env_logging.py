@@ -252,6 +252,168 @@ def verify_all_at_once() -> None:
 # ---------------------------------------------------------------------------
 
 
+def verify_applied_from_env(parsed: dict[str, str]) -> None:
+    """Apply the parsed .env values verbatim and verify the resulting
+    real config matches what's expected for a production setup.
+
+    The 6 verify_*() functions above each set their own env vars to
+    test a single dimension in isolation.  This function is the
+    'integrated' check: it applies the parsed .env (or .env.example)
+    values AS-IS and asserts that the live handler/formatter/level/file
+    matches the production-style config in the .env.
+
+    For a stock .env.example (text / stderr / no rotation) the
+    assertions below match the default-config assertions in
+    verify_default().  For a real .env (json / file / rotation) they
+    differ -- and that's the point: this section surfaces the gap.
+    """
+    _section("7. applied from .env (the 'real config' check)")
+    _strip_log_env()
+    for k, v in parsed.items():
+        if v:
+            os.environ[k] = v
+    try:
+        # If a file path was set, also make sure the parent dir exists
+        # so the FileHandler can open it.
+        log_file = parsed.get("FULLADDMAX_LOG_FILE", "").strip()
+        if log_file:
+            log_path = Path(log_file).expanduser().resolve()
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            os.environ["FULLADDMAX_LOG_FILE"] = str(log_path)
+
+        lc.configure_logging()
+        root = logging.getLogger()
+
+        # Expected behaviour: derived from the parsed vars.
+        want_json = parsed.get("FULLADDMAX_LOG_FORMAT", "text").lower() == "json"
+        want_level = parsed.get("FULLADDMAX_LOG_LEVEL", "INFO").upper()
+        want_file = bool(parsed.get("FULLADDMAX_LOG_FILE", "").strip())
+        want_rotate = int(parsed.get("FULLADDMAX_LOG_ROTATE_MAX_BYTES", "0") or 0) > 0
+
+        h = _handler_of_type(root, logging.StreamHandler,
+                             logging.FileHandler,
+                             logging.handlers.RotatingFileHandler)
+        _check(h is not None, f"a handler is installed (file={want_file}, "
+                              f"rotate={want_rotate}, json={want_json})")
+        if h is None:
+            return
+
+        # Handler class
+        if want_rotate:
+            _check(
+                isinstance(h, logging.handlers.RotatingFileHandler),
+                "handler is RotatingFileHandler (MAX_BYTES > 0)",
+            )
+        elif want_file:
+            _check(
+                isinstance(h, (logging.FileHandler,
+                               logging.handlers.RotatingFileHandler))
+                and not isinstance(h, logging.StreamHandler),
+                "handler is FileHandler (no rotation)",
+            )
+        else:
+            _check(
+                isinstance(h, logging.StreamHandler),
+                "handler is StreamHandler (stderr, no file)",
+            )
+            _check(
+                getattr(h, "stream", None) is sys.stderr,
+                "stream is stderr",
+            )
+
+        # Formatter
+        if want_json:
+            _check(
+                isinstance(h.formatter, lc.JsonFormatter),
+                "formatter is JsonFormatter (env var said json)",
+            )
+        else:
+            _check(
+                not isinstance(h.formatter, lc.JsonFormatter),
+                "formatter is text (env var said text)",
+            )
+
+        # Level
+        _check(
+            root.level == getattr(logging, want_level, logging.INFO),
+            f"root level == {want_level}",
+        )
+
+        # Emit a real record and confirm it lands in the right place.
+        if want_json and want_file:
+            # Production-typical combo: JSON to a rotated file.
+            try:
+                lc.get_logger("applied").warning(
+                    "applied from real .env", extra={"src": "verify_env_logging.py"}
+                )
+                logging.shutdown()
+                body = Path(str(log_path)).read_text(encoding="utf-8")
+                _check(
+                    "applied from real .env" in body,
+                    f"real record landed in {log_path}",
+                )
+                # And it's valid JSON, one record per line.
+                lines = [
+                    line for line in body.splitlines()
+                    if line.strip().startswith("{")
+                ]
+                _check(
+                    len(lines) >= 1,
+                    f"{len(lines)} JSON line(s) in log file",
+                )
+                try:
+                    rec = json.loads(lines[-1])
+                    _check(
+                        rec.get("message") == "applied from real .env",
+                        "last JSON record's message field is correct",
+                    )
+                    _check(
+                        rec.get("src") == "verify_env_logging.py",
+                        "extra={'src': ...} merged into JSON record",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    _fail("last log line is valid JSON", repr(e))
+            finally:
+                logging.shutdown()
+        elif want_json:
+            import io as _io
+            if not want_file and isinstance(h, logging.StreamHandler):
+                # Swap stream so we can read it back.
+                saved = h.stream
+                h.stream = _io.StringIO()
+                logging.getLogger("fulladdmax-mp.applied").info(
+                    "applied-from-env", extra={"src": "verify_env_logging.py"}
+                )
+                line = h.stream.getvalue().strip()
+                h.stream = saved
+                try:
+                    rec = json.loads(line)
+                    _check(
+                        rec["message"] == "applied-from-env",
+                        "real record emitted in JSON format",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    _fail("real JSON record parses", repr(e))
+        elif want_file:
+            # Real log line should land in the real file.
+            try:
+                lc.get_logger("applied").warning("applied from real .env")
+                logging.shutdown()
+                body = Path(str(log_path)).read_text(encoding="utf-8")
+                _check(
+                    "applied from real .env" in body,
+                    f"real record landed in {log_path}",
+                )
+            finally:
+                logging.shutdown()
+        else:
+            # Stderr path: just confirm the emit doesn't raise.
+            lc.get_logger("applied").info("applied from real .env (stderr)")
+            _ok("real record emitted to stderr without error")
+    finally:
+        _strip_log_env()
+
+
 def main() -> int:
     import argparse
 
@@ -300,6 +462,12 @@ def main() -> int:
     verify_file()
     verify_rotation()
     verify_all_at_once()
+
+    # 'Integrated' check: apply the parsed .env values verbatim and
+    # verify the live config matches.  This is the one that differs
+    # between .env.example (text / stderr / no rotation) and a real
+    # .env (json / file / rotation).
+    verify_applied_from_env(parsed)
 
     print()
     print("=" * 70)
