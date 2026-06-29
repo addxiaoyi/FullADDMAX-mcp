@@ -108,11 +108,14 @@ SCHEMAS: dict[str, dict[str, FieldSpec]] = {
     #   * max_depth      — recursion cap for nested hive_run calls
     #                      (None = uncapped)
     #   * max_waves      — hard ceiling on waves (default 20)
+    # v0.7: accepts list[str] (legacy) or list[{name, persona,
+    # system_prompt}] (new).  items_type=None skips element-level
+    # validation so both shapes pass.
     "hive_run": {
         "task": FieldSpec(required=True, type=str),
         "departments": FieldSpec(
-            required=False, type=list, items_type=str, default=None
-        ),  # custom minister names; default = 6 classical ministries
+            required=False, type=list, items_type=None, default=None
+        ),
         "waves": FieldSpec(required=False, type=int, default=2),
         "max_subagents": FieldSpec(required=False, type=int, default=200),
         "max_depth": FieldSpec(
@@ -842,10 +845,145 @@ _DEFAULT_MINISTRIES = [
 _HIVE_MAX_WAVES = 20           # hard ceiling on waves (any value above is an error)
 
 
+# ---------------------------------------------------------------------------
+# v0.7 hive_run: departments resolver + per-worker output signature
+# ---------------------------------------------------------------------------
+
+def _resolve_departments(
+    departments: list[Any] | None,
+) -> list[dict[str, str]]:
+    """Resolve the ``departments`` param into a uniform ministry list.
+
+    Accepts the union of two shapes (backward-compatible):
+      * ``list[str]``  — v0.6 API: name only, fuzzy-matched against
+        the 6 classical ministries, fallback to a generic
+        system prompt.
+      * ``list[dict]`` — v0.7 API: ``{name, persona, system_prompt}``.
+        The persona/system_prompt is passed verbatim to the LLM
+        as the worker's identity, so a 29-role STARQL hive each
+        role gets its own dedicated persona instead of a generic
+        "fill in".
+
+    Each output dict has keys: ``name``, ``angle``, ``system``,
+    ``persona`` (persona defaults to ``''`` when not provided).
+    """
+    if not departments:
+        return list(_DEFAULT_MINISTRIES)
+
+    resolved: list[dict[str, str]] = []
+    for item in departments:
+        # ---- v0.7 dict shape: caller-provided persona wins ----
+        if isinstance(item, dict):
+            name = str(item.get("name") or item.get("role") or "").strip()
+            if not name:
+                continue
+            resolved.append({
+                "name": name,
+                "angle": str(item.get("persona")
+                             or item.get("angle")
+                             or f"specialty perspective: {name}"),
+                "system": str(item.get("system_prompt")
+                              or item.get("system")
+                              or (f"You are the {name} minister. "
+                                  f"Apply your specialty perspective "
+                                  f"to the task and output a Markdown "
+                                  f"report.")),
+                "persona": str(item.get("persona") or ""),
+            })
+            continue
+
+        # ---- v0.6 str shape: fuzzy match against classical 6 ----
+        name = str(item).strip()
+        if not name:
+            continue
+        match = next(
+            (m for m in _DEFAULT_MINISTRIES
+             if m["name"].split(" ")[0] in name or name in m["name"]),
+            None,
+        )
+        if match:
+            resolved.append({**match, "persona": ""})
+        else:
+            resolved.append({
+                "name": name,
+                "angle": f"specialty perspective: {name}",
+                "system": (f"You are the {name} minister. Apply your "
+                           f"specialty perspective to the task and "
+                           f"output a Markdown report."),
+                "persona": "",
+            })
+    return resolved
+
+
+def _sign_worker_output(
+    body: str,
+    ministries: list[dict[str, str]],
+    wave: int,
+    waves_total: int,
+    elapsed_ms: int,
+) -> str:
+    """Prepend a per-worker signature header to each section of body.
+
+    The signature is a single-line Markdown blockquote:
+
+        > 🏷️ **role:** <name> · ⏱️ <ms>ms · 🔐 sha256:<8> · 🌊 wave <N>/<W>
+
+    We split the body on the ``## Task #<N>`` markers that
+    :func:`fulladdmax_mcp.parallel.run` emits, then inject the
+    signature right after each marker.  Task index is 1-based and
+    mapped to ``ministries[index - 1]``.  When the LLM doesn't
+    return a recognizable marker (e.g. wrapped in code blocks), we
+    fall back to attaching a single trailer at the end so the
+    timing is never lost.
+
+    Returns the annotated body.  Original content is never modified.
+    """
+    import hashlib
+    import re
+
+    def _sig(name: str, text: str) -> str:
+        digest = hashlib.sha256(
+            text.encode("utf-8", errors="replace")
+        ).hexdigest()[:8]
+        return (
+            f"> 🏷️ **role:** {name} · "
+            f"⏱️ {elapsed_ms}ms · "
+            f"🔐 sha256:{digest} · "
+            f"🌊 wave {wave}/{waves_total}"
+        )
+
+    task_re = re.compile(r"^##\s+Task\s+#(\d+)(?:\s*\(ERROR\))?", re.MULTILINE)
+    lines = body.splitlines(keepends=True)
+    out: list[str] = []
+    annotated_count = 0
+    task_idx = 0
+
+    for line in lines:
+        out.append(line)
+        m = task_re.match(line.lstrip())
+        if m:
+            task_idx = int(m.group(1))
+            if 1 <= task_idx <= len(ministries):
+                display_name = ministries[task_idx - 1]["name"]
+            else:
+                display_name = f"task-{task_idx}"
+            out.append(_sig(display_name, body) + "\n")
+            annotated_count += 1
+
+    if annotated_count == 0:
+        out.append("\n")
+        out.append(_sig("(merged)", body) + "\n")
+
+    return "".join(out)
+
+
 async def _hive_run(
     *,
     task: str,
-    departments: list[str] | None = None,
+    # v0.7: accepts list[str] (legacy) or list[{name, persona,
+    # system_prompt}] (new).  Resolution handled by
+    # :func:`_resolve_departments`.
+    departments: list[Any] | None = None,
     waves: int = 2,
     max_subagents: int = 200,
     max_depth: int | None = None,
@@ -908,25 +1046,9 @@ async def _hive_run(
     #      exactly like the LLM path would (so caller sees consistent
     #      labels + sub-agent count) but emits Markdown frameworks. ----
     if not get_config().is_configured():
-        # Resolve departments the same way as the live path.
-        if departments and isinstance(departments[0], str):
-            stub_ministries: list[dict[str, str]] = []
-            for name in departments:
-                match = next(
-                    (m for m in _DEFAULT_MINISTRIES
-                     if m["name"].split(" ")[0] in name or name in m["name"]),
-                    None,
-                )
-                if match:
-                    stub_ministries.append(match)
-                else:
-                    stub_ministries.append({
-                        "name": name,
-                        "angle": f"specialty perspective: {name}",
-                        "system": "",
-                    })
-        else:
-            stub_ministries = list(_DEFAULT_MINISTRIES)
+        # v0.7: shared resolver handles both list[str] and
+        # list[{name, persona, system_prompt}] shapes.
+        stub_ministries = _resolve_departments(departments)
         stub_critic = next(
             (i for i, m in enumerate(stub_ministries)
              if "critic" in m["angle"]
@@ -959,26 +1081,12 @@ async def _hive_run(
         return "\n".join(lines)
 
     # ---- Resolve ministries ----
-    if departments and isinstance(departments[0], str):
-        ministries: list[dict[str, str]] = []
-        for name in departments:
-            match = next(
-                (m for m in _DEFAULT_MINISTRIES
-                 if m["name"].split(" ")[0] in name or name in m["name"]),
-                None,
-            )
-            if match:
-                ministries.append(match)
-            else:
-                ministries.append({
-                    "name": name,
-                    "angle": f"specialty perspective: {name}",
-                    "system": (f"You are the {name} minister. Apply your "
-                               f"specialty perspective to the task and "
-                               f"output a Markdown report."),
-                })
-    else:
-        ministries = list(_DEFAULT_MINISTRIES)
+    # v0.7: shared resolver accepts list[str] (legacy) or
+    # list[{name, persona, system_prompt}] (new).  Empty
+    # result means caller passed an all-empty list; we fail loud.
+    ministries = _resolve_departments(departments)
+    if not ministries:
+        raise ValueError(i18n.t("hive_no_ministries"))
 
     # Soft cap: 6 ministries × waves × heuristic expansion.  We
     # estimate and bail out before exceeding max_subagents.
@@ -1015,11 +1123,32 @@ async def _hive_run(
             lines.append(f"--- wave {wave}/{waves} ---")
             sub_tasks: list[str] = []
             for m in ministries:
+                # v0.7: when the ministry carries a custom
+                # system_prompt (i.e. caller used the dict shape),
+                # we prepend it to the user message so the LLM
+                # sees the role-specific persona.  When the
+                # caller used the legacy str shape, the
+                # resolver put a generic system_prompt on every
+                # role; we only prepend it when it's
+                # meaningfully different from the generic
+                # fallback to avoid bloating the prompt with
+                # boilerplate.
+                persona_prefix = ""
+                if m.get("system"):
+                    # The generic fallback starts with
+                    # "You are the <name> minister. Apply your
+                    # specialty perspective..."; only inject
+                    # when the caller provided a richer persona.
+                    if not m["system"].startswith("You are the "):
+                        persona_prefix = (
+                            f"[Acting as: {m['system']}]\n\n"
+                        )
                 if wave == 1:
-                    sub = f"[{m['name']}] {task}"
+                    sub = f"{persona_prefix}[{m['name']}] {task}"
                 else:
                     sub = (
-                        f"[{m['name']}] REFINEMENT wave {wave} for: {task}\n\n"
+                        f"{persona_prefix}[{m['name']}] REFINEMENT "
+                        f"wave {wave} for: {task}\n\n"
                         f"Previous critic's report:\n{critic_feedback}\n\n"
                         f"Update your previous {m['name']} output to address "
                         f"the critic's concerns."
@@ -1032,14 +1161,24 @@ async def _hive_run(
                     f"is the synthesiser only)")
                 break
 
+            # v0.7: time the wave, sign each worker's output.
+            import time
+            t0 = time.monotonic()
             body = await server_internal.parallel_agents_run(
                 sub_tasks,
                 max_concurrent=len(sub_tasks),  # no cap — fire all at once
                 tools=tools,
             )
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            body = _sign_worker_output(body, ministries, wave, waves, elapsed_ms)
+
             subagent_count += len(sub_tasks)
             lines.append(body)
-            all_reports.append({"wave": wave, "output": body})
+            all_reports.append({
+                "wave": wave,
+                "output": body,
+                "elapsed_ms": elapsed_ms,
+            })
 
             # Pull the critic's output for the next-wave feedback loop.
             if critic_idx is not None and wave < waves:
